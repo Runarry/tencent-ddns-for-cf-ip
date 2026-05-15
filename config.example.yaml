@@ -41,5 +41,13 @@ api:
   listen_addr: ":8080"
   bearer_token: "replace-with-a-long-random-token"
 
+subscription:
+  enabled: false
+  # 公开订阅地址为 /sub/<public_token>，无需 Bearer Token，请使用足够长的随机值。
+  public_token: "replace-with-a-long-random-subscription-token"
+  format: "base64"
+  # 支持 vmess/vless/trojan/ss/hysteria/hysteria2 分享字符串；只会替换实际连接地址。
+  shares: []
+
 state:
   state_file: "/data/state.json"

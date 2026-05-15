@@ -7,11 +7,13 @@ import (
 	"strings"
 
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/config"
+	"github.com/sleep/tencent-ddns-for-cf-ip/internal/subscription"
 	syncsvc "github.com/sleep/tencent-ddns-for-cf-ip/internal/sync"
 )
 
 type Config struct {
-	Token string
+	Token        string
+	Subscription config.SubscriptionConfig
 }
 
 type Server struct {
@@ -28,6 +30,9 @@ func NewServer(cfg Config, service *syncsvc.Service, redacted config.Config) htt
 	mux.HandleFunc("GET /api/v1/records", s.withAuth(s.records))
 	mux.HandleFunc("GET /api/v1/status", s.withAuth(s.status))
 	mux.HandleFunc("GET /api/v1/config", s.withAuth(s.configHandler))
+	if cfg.Subscription.Enabled {
+		mux.HandleFunc("GET /sub/{token}", s.subscription)
+	}
 	return mux
 }
 
@@ -60,6 +65,30 @@ func (s *Server) configHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.config)
 }
 
+func (s *Server) subscription(w http.ResponseWriter, r *http.Request) {
+	if r.PathValue("token") != s.cfg.Subscription.PublicToken {
+		http.NotFound(w, r)
+		return
+	}
+	body, err := subscription.Generate(subscription.Config{
+		Shares: s.cfg.Subscription.Shares,
+		Format: s.cfg.Subscription.Format,
+	}, s.service.Records())
+	if errors.Is(err, subscription.ErrNoTargets) {
+		writeText(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	if errors.Is(err, subscription.ErrNoValidShares) {
+		writeText(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	if err != nil {
+		writeText(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeText(w, http.StatusOK, body)
+}
+
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		got := strings.TrimSpace(r.Header.Get("Authorization"))
@@ -76,4 +105,10 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+func writeText(w http.ResponseWriter, status int, value string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(value))
 }

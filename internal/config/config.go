@@ -34,11 +34,12 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 }
 
 type Config struct {
-	Provider ProviderConfig `yaml:"provider" json:"provider"`
-	DNSPod   DNSPodConfig   `yaml:"dnspod" json:"dnspod"`
-	Sync     SyncConfig     `yaml:"sync" json:"sync"`
-	API      APIConfig      `yaml:"api" json:"api"`
-	State    StateConfig    `yaml:"state" json:"state"`
+	Provider     ProviderConfig     `yaml:"provider" json:"provider"`
+	DNSPod       DNSPodConfig       `yaml:"dnspod" json:"dnspod"`
+	Sync         SyncConfig         `yaml:"sync" json:"sync"`
+	API          APIConfig          `yaml:"api" json:"api"`
+	State        StateConfig        `yaml:"state" json:"state"`
+	Subscription SubscriptionConfig `yaml:"subscription" json:"subscription"`
 }
 
 type ProviderConfig struct {
@@ -90,6 +91,13 @@ type StateConfig struct {
 	File string `yaml:"state_file" json:"state_file"`
 }
 
+type SubscriptionConfig struct {
+	Enabled     bool     `yaml:"enabled" json:"enabled"`
+	PublicToken string   `yaml:"public_token" json:"public_token,omitempty"`
+	Shares      []string `yaml:"shares" json:"shares,omitempty"`
+	Format      string   `yaml:"format" json:"format"`
+}
+
 func Load(path string) (Config, error) {
 	cfg := defaults()
 	if _, err := os.Stat(path); err == nil {
@@ -105,6 +113,14 @@ func Load(path string) (Config, error) {
 	}
 
 	applyEnv(&cfg)
+	normalize(&cfg)
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func normalize(cfg *Config) {
 	cfg.Provider.Source = strings.ToLower(strings.TrimSpace(cfg.Provider.Source))
 	if cfg.Provider.URL == "" {
 		if cfg.Provider.Source == "api" {
@@ -113,10 +129,18 @@ func Load(path string) (Config, error) {
 			cfg.Provider.URL = cfg.Provider.WebURL
 		}
 	}
-	if err := cfg.Validate(); err != nil {
-		return Config{}, err
+	cfg.Subscription.PublicToken = strings.TrimSpace(cfg.Subscription.PublicToken)
+	cfg.Subscription.Format = strings.ToLower(strings.TrimSpace(cfg.Subscription.Format))
+	if cfg.Subscription.Format == "" {
+		cfg.Subscription.Format = "base64"
 	}
-	return cfg, nil
+	shares := make([]string, 0, len(cfg.Subscription.Shares))
+	for _, share := range cfg.Subscription.Shares {
+		if share = strings.TrimSpace(share); share != "" {
+			shares = append(shares, share)
+		}
+	}
+	cfg.Subscription.Shares = shares
 }
 
 func defaults() Config {
@@ -154,6 +178,9 @@ func defaults() Config {
 		State: StateConfig{
 			File: "/data/state.json",
 		},
+		Subscription: SubscriptionConfig{
+			Format: "base64",
+		},
 	}
 }
 
@@ -190,6 +217,9 @@ func applyEnv(cfg *Config) {
 	setString(&cfg.API.ListenAddr, "API_LISTEN_ADDR")
 	setString(&cfg.API.BearerToken, "API_BEARER_TOKEN")
 	setString(&cfg.State.File, "STATE_FILE")
+	setBool(&cfg.Subscription.Enabled, "SUBSCRIPTION_ENABLED")
+	setString(&cfg.Subscription.PublicToken, "SUBSCRIPTION_PUBLIC_TOKEN")
+	setString(&cfg.Subscription.Format, "SUBSCRIPTION_FORMAT")
 }
 
 func (c Config) Validate() error {
@@ -250,6 +280,23 @@ func (c Config) Validate() error {
 			return errors.New("sync.fallback.type must not be empty when fallback is enabled")
 		}
 	}
+	if c.Subscription.Enabled {
+		if c.Subscription.PublicToken == "" {
+			return errors.New("subscription.public_token must not be empty when subscription is enabled")
+		}
+		if len(c.Subscription.PublicToken) < 16 {
+			return errors.New("subscription.public_token must be at least 16 characters")
+		}
+		if strings.Contains(c.Subscription.PublicToken, "/") {
+			return errors.New("subscription.public_token must be a single path segment")
+		}
+		if len(c.Subscription.Shares) == 0 {
+			return errors.New("subscription.shares must not be empty when subscription is enabled")
+		}
+	}
+	if c.Subscription.Format != "base64" {
+		return errors.New("subscription.format must be base64")
+	}
 	return nil
 }
 
@@ -257,6 +304,8 @@ func (c Config) Redacted() Config {
 	c.Provider.Key = ""
 	c.DNSPod.SecretKey = ""
 	c.API.BearerToken = ""
+	c.Subscription.PublicToken = ""
+	c.Subscription.Shares = nil
 	return c
 }
 
