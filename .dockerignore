@@ -1,0 +1,6 @@
+.git
+.gocache
+.gopath
+data
+*.tmp
+

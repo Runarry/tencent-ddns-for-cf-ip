@@ -1,0 +1,7 @@
+.gocache/
+.gopath/
+data/
+config.yaml
+*.exe
+*.test
+

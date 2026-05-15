@@ -1,0 +1,45 @@
+provider:
+  # web: 抓取公开网页 https://api.uouin.com/cloudflare.html，不需要站长工具 API 账号。
+  # api: 使用收费 API，需要 username/key。
+  source: "web"
+  url: "https://api.uouin.com/cloudflare.html"
+  web_url: "https://api.uouin.com/cloudflare.html"
+  api_url: "https://api.uouin.com/app/cloudflare"
+  username: ""
+  key: ""
+  nodeids: ["ctcc", "bgp", "cucc"]
+  timeout: "20s"
+
+dnspod:
+  secret_id: "your-tencent-secret-id"
+  secret_key: "your-tencent-secret-key"
+  domain: ""
+  record_line: "默认"
+  ttl: 600
+
+sync:
+  interval: "10m"
+  managed_prefix: "cf"
+  managed_base_subdomain: "cdn"
+  # 站长工具请求仍使用 ctcc，DNS 主机名可映射为你想要的标签。
+  node_labels:
+    ctcc: "ctcc"
+  # 默认域名 cdn.q.example.com 使用当前最快的电信节点更新。
+  default_nodeid: "ctcc"
+  max_records_per_node: 5
+  ping_timeout: "3s"
+  ping_threshold_ms: 800
+  ping_concurrency: 32
+  ping_packets: 3
+  fallback:
+    enabled: true
+    wildcard_subdomain: "*.cdn"
+    target: ""
+    type: "CNAME"
+
+api:
+  listen_addr: ":8080"
+  bearer_token: "replace-with-a-long-random-token"
+
+state:
+  state_file: "/data/state.json"

@@ -1,0 +1,15 @@
+services:
+  tencent-ddns:
+    build: .
+    container_name: tencent-ddns-for-cf-ip
+    restart: unless-stopped
+    cap_add:
+      - NET_RAW
+    environment:
+      CONFIG_FILE: /app/config.yaml
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/data
+
