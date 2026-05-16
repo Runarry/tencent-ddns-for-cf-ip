@@ -34,12 +34,13 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 }
 
 type Config struct {
-	Provider     ProviderConfig     `yaml:"provider" json:"provider"`
-	DNSPod       DNSPodConfig       `yaml:"dnspod" json:"dnspod"`
-	Sync         SyncConfig         `yaml:"sync" json:"sync"`
-	API          APIConfig          `yaml:"api" json:"api"`
-	State        StateConfig        `yaml:"state" json:"state"`
-	Subscription SubscriptionConfig `yaml:"subscription" json:"subscription"`
+	Provider               ProviderConfig       `yaml:"provider" json:"provider"`
+	DNSPod                 DNSPodConfig         `yaml:"dnspod" json:"dnspod"`
+	Sync                   SyncConfig           `yaml:"sync" json:"sync"`
+	API                    APIConfig            `yaml:"api" json:"api"`
+	State                  StateConfig          `yaml:"state" json:"state"`
+	Subscriptions          []SubscriptionConfig `yaml:"subscriptions" json:"subscriptions,omitempty"`
+	DeprecatedSubscription *SubscriptionConfig  `yaml:"subscription" json:"-"`
 }
 
 type ProviderConfig struct {
@@ -92,10 +93,13 @@ type StateConfig struct {
 }
 
 type SubscriptionConfig struct {
+	Name        string   `yaml:"name" json:"name,omitempty"`
 	Enabled     bool     `yaml:"enabled" json:"enabled"`
 	PublicToken string   `yaml:"public_token" json:"public_token,omitempty"`
+	Key         string   `yaml:"key" json:"-"`
 	Shares      []string `yaml:"shares" json:"shares,omitempty"`
 	Format      string   `yaml:"format" json:"format"`
+	NodeIDs     []string `yaml:"nodeids" json:"nodeids,omitempty"`
 }
 
 func Load(path string) (Config, error) {
@@ -129,18 +133,31 @@ func normalize(cfg *Config) {
 			cfg.Provider.URL = cfg.Provider.WebURL
 		}
 	}
-	cfg.Subscription.PublicToken = strings.TrimSpace(cfg.Subscription.PublicToken)
-	cfg.Subscription.Format = strings.ToLower(strings.TrimSpace(cfg.Subscription.Format))
-	if cfg.Subscription.Format == "" {
-		cfg.Subscription.Format = "base64"
-	}
-	shares := make([]string, 0, len(cfg.Subscription.Shares))
-	for _, share := range cfg.Subscription.Shares {
-		if share = strings.TrimSpace(share); share != "" {
-			shares = append(shares, share)
+	for i := range cfg.Subscriptions {
+		sub := &cfg.Subscriptions[i]
+		sub.Name = strings.TrimSpace(sub.Name)
+		sub.PublicToken = strings.TrimSpace(sub.PublicToken)
+		sub.Key = strings.TrimSpace(sub.Key)
+		sub.Format = strings.ToLower(strings.TrimSpace(sub.Format))
+		if sub.Format == "" {
+			sub.Format = "base64"
 		}
+		shares := make([]string, 0, len(sub.Shares))
+		for _, share := range sub.Shares {
+			if share = strings.TrimSpace(share); share != "" {
+				shares = append(shares, share)
+			}
+		}
+		sub.Shares = shares
+
+		nodeIDs := make([]string, 0, len(sub.NodeIDs))
+		for _, nodeID := range sub.NodeIDs {
+			if nodeID = strings.ToLower(strings.TrimSpace(nodeID)); nodeID != "" {
+				nodeIDs = append(nodeIDs, nodeID)
+			}
+		}
+		sub.NodeIDs = nodeIDs
 	}
-	cfg.Subscription.Shares = shares
 }
 
 func defaults() Config {
@@ -178,9 +195,6 @@ func defaults() Config {
 		State: StateConfig{
 			File: "/data/state.json",
 		},
-		Subscription: SubscriptionConfig{
-			Format: "base64",
-		},
 	}
 }
 
@@ -217,9 +231,6 @@ func applyEnv(cfg *Config) {
 	setString(&cfg.API.ListenAddr, "API_LISTEN_ADDR")
 	setString(&cfg.API.BearerToken, "API_BEARER_TOKEN")
 	setString(&cfg.State.File, "STATE_FILE")
-	setBool(&cfg.Subscription.Enabled, "SUBSCRIPTION_ENABLED")
-	setString(&cfg.Subscription.PublicToken, "SUBSCRIPTION_PUBLIC_TOKEN")
-	setString(&cfg.Subscription.Format, "SUBSCRIPTION_FORMAT")
 }
 
 func (c Config) Validate() error {
@@ -280,22 +291,40 @@ func (c Config) Validate() error {
 			return errors.New("sync.fallback.type must not be empty when fallback is enabled")
 		}
 	}
-	if c.Subscription.Enabled {
-		if c.Subscription.PublicToken == "" {
-			return errors.New("subscription.public_token must not be empty when subscription is enabled")
-		}
-		if len(c.Subscription.PublicToken) < 16 {
-			return errors.New("subscription.public_token must be at least 16 characters")
-		}
-		if strings.Contains(c.Subscription.PublicToken, "/") {
-			return errors.New("subscription.public_token must be a single path segment")
-		}
-		if len(c.Subscription.Shares) == 0 {
-			return errors.New("subscription.shares must not be empty when subscription is enabled")
-		}
+	if c.DeprecatedSubscription != nil {
+		return errors.New("subscription is no longer supported; use subscriptions list instead")
 	}
-	if c.Subscription.Format != "base64" {
-		return errors.New("subscription.format must be base64")
+	seenTokens := map[string]struct{}{}
+	for i, sub := range c.Subscriptions {
+		format := strings.ToLower(strings.TrimSpace(sub.Format))
+		if format == "" {
+			format = "base64"
+		}
+		if format != "base64" {
+			return fmt.Errorf("subscriptions[%d].format must be base64", i)
+		}
+		if !sub.Enabled {
+			continue
+		}
+		if sub.PublicToken == "" {
+			return fmt.Errorf("subscriptions[%d].public_token must not be empty when subscription is enabled", i)
+		}
+		if sub.Key == "" {
+			return fmt.Errorf("subscriptions[%d].key must not be empty when subscription is enabled", i)
+		}
+		if len(sub.PublicToken) < 16 {
+			return fmt.Errorf("subscriptions[%d].public_token must be at least 16 characters", i)
+		}
+		if strings.Contains(sub.PublicToken, "/") {
+			return fmt.Errorf("subscriptions[%d].public_token must be a single path segment", i)
+		}
+		if _, exists := seenTokens[sub.PublicToken]; exists {
+			return fmt.Errorf("subscriptions[%d].public_token must be unique among enabled subscriptions", i)
+		}
+		seenTokens[sub.PublicToken] = struct{}{}
+		if len(sub.Shares) == 0 {
+			return fmt.Errorf("subscriptions[%d].shares must not be empty when subscription is enabled", i)
+		}
 	}
 	return nil
 }
@@ -304,8 +333,11 @@ func (c Config) Redacted() Config {
 	c.Provider.Key = ""
 	c.DNSPod.SecretKey = ""
 	c.API.BearerToken = ""
-	c.Subscription.PublicToken = ""
-	c.Subscription.Shares = nil
+	for i := range c.Subscriptions {
+		c.Subscriptions[i].PublicToken = ""
+		c.Subscriptions[i].Key = ""
+		c.Subscriptions[i].Shares = nil
+	}
 	return c
 }
 

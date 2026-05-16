@@ -11,7 +11,7 @@
 - 只管理 `managed_prefix` 和 `managed_base_subdomain` 生成的记录，例如 `cf-cctcc-01.cdn.q.example.com`，不会修改其他 DNS 记录。
 - 默认域名可自动使用当前最快的电信节点，例如更新 `cdn.q.example.com` 到最快 `ctcc` IP。
 - 支持通配符 CNAME 回落：删除 `cf-cctcc-01.cdn.q.example.com` 后，可由 `*.cdn.q.example.com` 回落到 `cdn.q.example.com`。
-- 可公开一个长路径订阅地址，将输入的 3x-ui/v2ray 分享字符串批量替换为当前优选域名。
+- 可公开多个长路径订阅地址，将输入的 3x-ui/v2ray 分享字符串批量替换为当前优选域名。
 - 每个 IP 都会 ping，ping 不通或平均延迟超过默认 `800ms` 会被丢弃。
 - JSON 状态文件持久化，适合 Docker 挂载 `/data`。
 
@@ -53,10 +53,14 @@ docker compose up -d --build
 
 订阅参数：
 
-- `subscription.enabled`：是否启用公开订阅地址。
-- `subscription.public_token`：公开订阅路径 token，访问地址为 `/sub/<public_token>`，无需 Bearer Token。
-- `subscription.shares`：原始分享字符串列表，支持 `vmess`、`vless`、`trojan`、`ss`、`hysteria`、`hysteria2`。
-- `subscription.format`：当前固定为 `base64`。
+- `subscriptions`：公开订阅列表，每一项独立生成一个订阅地址。
+- `subscriptions[].enabled`：是否启用该订阅。
+- `subscriptions[].name`：订阅名称，仅用于配置识别和诊断。
+- `subscriptions[].public_token`：公开订阅路径 token，访问地址为 `/sub/<public_token>?key=<key>`，无需 Bearer Token，至少 16 个字符。
+- `subscriptions[].key`：订阅 query 参数鉴权 key，启用订阅时必填，建议使用足够长的随机值。
+- `subscriptions[].nodeids`：可选线路过滤，例如 `["ctcc"]`；为空时使用全部非 fallback 优选域名。请求可用 `nodeids=ctcc,bgp` 动态收窄线路范围。
+- `subscriptions[].shares`：原始分享字符串列表，支持 `vmess`、`vless`、`trojan`、`ss`、`hysteria`、`hysteria2`。
+- `subscriptions[].format`：当前固定为 `base64`。
 
 网页模式配置：
 
@@ -95,13 +99,14 @@ curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/upda
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/config
 ```
 
-订阅地址无需鉴权，但应使用足够长的随机路径：
+订阅地址无需 Bearer Token，但必须带该订阅配置的 `key`。每个 `subscriptions` 项都有自己的地址：
 
 ```bash
-curl http://localhost:8080/sub/replace-with-a-long-random-subscription-token
+curl "http://localhost:8080/sub/replace-with-a-long-random-subscription-token?key=replace-with-a-long-random-subscription-key"
+curl "http://localhost:8080/sub/replace-with-a-long-random-subscription-token?key=replace-with-a-long-random-subscription-key&nodeids=ctcc"
 ```
 
-订阅内容会把分享链接的实际连接地址替换为当前优选 FQDN，例如 `cf-ctcc-01.cdn.q.example.com`；`sni`、`host`、`path` 等传输参数保持原值。
+订阅内容会把分享链接的实际连接地址替换为当前优选 FQDN，例如 `cf-ctcc-01.cdn.q.example.com`；`sni`、`host`、`path` 等传输参数保持原值。配置了 `nodeids` 时，只会使用匹配线路的优选 FQDN；请求里的 `nodeids` 只能在配置允许范围内继续收窄。
 
 ## DNS 记录命名
 

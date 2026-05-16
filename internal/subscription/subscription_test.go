@@ -157,3 +157,29 @@ func TestGenerateUsesPreferredFQDNsAndBase64Subscription(t *testing.T) {
 		t.Fatalf("fallback target leaked into subscription: %q", decoded)
 	}
 }
+
+func TestGenerateFiltersTargetsByNodeID(t *testing.T) {
+	records := []state.Record{
+		{Name: "cf-bgp-01.cdn", FQDN: "cf-bgp-01.cdn.example.com", NodeID: "bgp", LatencyMS: 10, UpdatedAt: time.Now()},
+		{Name: "cf-ctcc-01.cdn", FQDN: "cf-ctcc-01.cdn.example.com", NodeID: "ctcc", LatencyMS: 40, UpdatedAt: time.Now()},
+	}
+	out, err := Generate(Config{
+		Format:  "base64",
+		NodeIDs: []string{"ctcc"},
+		Shares:  []string{"vless://uuid@old.example.com:443?security=tls#vless"},
+	}, records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(decoded)
+	if !strings.Contains(body, "@cf-ctcc-01.cdn.example.com:443") {
+		t.Fatalf("ctcc target missing: %q", body)
+	}
+	if strings.Contains(body, "@cf-bgp-01.cdn.example.com:443") {
+		t.Fatalf("bgp target leaked into filtered subscription: %q", body)
+	}
+}

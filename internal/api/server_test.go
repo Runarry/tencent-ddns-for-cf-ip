@@ -42,20 +42,35 @@ func TestPublicSubscriptionEndpoint(t *testing.T) {
 	initial := state.State{
 		Records: []state.Record{
 			{Name: "cf-ctcc-01.cdn", FQDN: "cf-ctcc-01.cdn.example.com", NodeID: "ctcc", LatencyMS: 20},
+			{Name: "cf-bgp-01.cdn", FQDN: "cf-bgp-01.cdn.example.com", NodeID: "bgp", LatencyMS: 10},
 		},
 	}
 	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, fakeDNS{}, fakeStore{}, initial, slog.Default())
 	handler := NewServer(Config{
 		Token: "secret",
-		Subscription: config.SubscriptionConfig{
-			Enabled:     true,
-			PublicToken: "long-random-public-token",
-			Format:      "base64",
-			Shares:      []string{"vless://uuid@old.example.com:443?security=tls&sni=sni.example.com#name"},
+		Subscriptions: []config.SubscriptionConfig{
+			{
+				Name:        "ctcc-main",
+				Enabled:     true,
+				PublicToken: "long-random-public-token",
+				Key:         "subscription-key",
+				Format:      "base64",
+				NodeIDs:     []string{"ctcc"},
+				Shares:      []string{"vless://uuid@old.example.com:443?security=tls&sni=sni.example.com#name"},
+			},
+			{
+				Name:        "bgp-main",
+				Enabled:     true,
+				PublicToken: "another-random-public-token",
+				Key:         "another-subscription-key",
+				Format:      "base64",
+				NodeIDs:     []string{"bgp"},
+				Shares:      []string{"trojan://pass@old.example.com:443?security=tls&sni=sni.example.com#name"},
+			},
 		},
 	}, service, config.Config{})
 
-	req := httptest.NewRequest(http.MethodGet, "/sub/long-random-public-token", nil)
+	req := httptest.NewRequest(http.MethodGet, "/sub/long-random-public-token?key=subscription-key", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -71,8 +86,39 @@ func TestPublicSubscriptionEndpoint(t *testing.T) {
 	if !strings.Contains(string(decoded), "@cf-ctcc-01.cdn.example.com:443") {
 		t.Fatalf("subscription did not use preferred fqdn: %s", decoded)
 	}
+	if strings.Contains(string(decoded), "@cf-bgp-01.cdn.example.com:443") {
+		t.Fatalf("subscription leaked another nodeid: %s", decoded)
+	}
 	if !strings.Contains(string(decoded), "sni=sni.example.com") {
 		t.Fatalf("subscription changed sni: %s", decoded)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/sub/another-random-public-token?key=another-subscription-key", nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("second code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	decoded, err = base64.StdEncoding.DecodeString(rr.Body.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(decoded), "@cf-bgp-01.cdn.example.com:443") {
+		t.Fatalf("second subscription did not use its nodeid: %s", decoded)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/sub/long-random-public-token", nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("missing key code = %d", rr.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/sub/long-random-public-token?key=wrong", nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong key code = %d", rr.Code)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/sub/wrong-token", nil)
@@ -87,20 +133,112 @@ func TestPublicSubscriptionEndpointReportsNoTargets(t *testing.T) {
 	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, fakeDNS{}, fakeStore{}, state.Empty(), slog.Default())
 	handler := NewServer(Config{
 		Token: "secret",
-		Subscription: config.SubscriptionConfig{
-			Enabled:     true,
-			PublicToken: "long-random-public-token",
-			Format:      "base64",
-			Shares:      []string{"vless://uuid@old.example.com:443#name"},
+		Subscriptions: []config.SubscriptionConfig{
+			{
+				Enabled:     true,
+				PublicToken: "long-random-public-token",
+				Key:         "subscription-key",
+				Format:      "base64",
+				Shares:      []string{"vless://uuid@old.example.com:443#name"},
+			},
 		},
 	}, service, config.Config{})
 
-	req := httptest.NewRequest(http.MethodGet, "/sub/long-random-public-token", nil)
+	req := httptest.NewRequest(http.MethodGet, "/sub/long-random-public-token?key=subscription-key", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {
 		body, _ := io.ReadAll(rr.Body)
 		t.Fatalf("code = %d, body = %s", rr.Code, body)
+	}
+}
+
+func TestPublicSubscriptionEndpointQueryNodeIDsNarrowConfiguredNodeIDs(t *testing.T) {
+	initial := state.State{
+		Records: []state.Record{
+			{Name: "cf-ctcc-01.cdn", FQDN: "cf-ctcc-01.cdn.example.com", NodeID: "ctcc", LatencyMS: 20},
+			{Name: "cf-bgp-01.cdn", FQDN: "cf-bgp-01.cdn.example.com", NodeID: "bgp", LatencyMS: 10},
+			{Name: "cf-cucc-01.cdn", FQDN: "cf-cucc-01.cdn.example.com", NodeID: "cucc", LatencyMS: 5},
+		},
+	}
+	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, fakeDNS{}, fakeStore{}, initial, slog.Default())
+	handler := NewServer(Config{
+		Token: "secret",
+		Subscriptions: []config.SubscriptionConfig{
+			{
+				Enabled:     true,
+				PublicToken: "long-random-public-token",
+				Key:         "subscription-key",
+				Format:      "base64",
+				NodeIDs:     []string{"ctcc", "bgp"},
+				Shares:      []string{"vless://uuid@old.example.com:443#name"},
+			},
+		},
+	}, service, config.Config{})
+
+	req := httptest.NewRequest(http.MethodGet, "/sub/long-random-public-token?key=subscription-key&nodeids=CTCC,cucc&nodeids=bgp", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	decoded, err := base64.StdEncoding.DecodeString(rr.Body.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(decoded)
+	if !strings.Contains(body, "@cf-ctcc-01.cdn.example.com:443") || !strings.Contains(body, "@cf-bgp-01.cdn.example.com:443") {
+		t.Fatalf("requested allowed targets missing: %s", body)
+	}
+	if strings.Contains(body, "@cf-cucc-01.cdn.example.com:443") {
+		t.Fatalf("request expanded beyond configured nodeids: %s", body)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/sub/long-random-public-token?key=subscription-key&nodeids=cucc", nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("disallowed nodeids code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestPublicSubscriptionEndpointQueryNodeIDsCanFilterUnrestrictedSubscription(t *testing.T) {
+	initial := state.State{
+		Records: []state.Record{
+			{Name: "cf-ctcc-01.cdn", FQDN: "cf-ctcc-01.cdn.example.com", NodeID: "ctcc", LatencyMS: 20},
+			{Name: "cf-bgp-01.cdn", FQDN: "cf-bgp-01.cdn.example.com", NodeID: "bgp", LatencyMS: 10},
+		},
+	}
+	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, fakeDNS{}, fakeStore{}, initial, slog.Default())
+	handler := NewServer(Config{
+		Token: "secret",
+		Subscriptions: []config.SubscriptionConfig{
+			{
+				Enabled:     true,
+				PublicToken: "long-random-public-token",
+				Key:         "subscription-key",
+				Format:      "base64",
+				Shares:      []string{"vless://uuid@old.example.com:443#name"},
+			},
+		},
+	}, service, config.Config{})
+
+	req := httptest.NewRequest(http.MethodGet, "/sub/long-random-public-token?key=subscription-key&nodeids=bgp", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	decoded, err := base64.StdEncoding.DecodeString(rr.Body.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(decoded)
+	if !strings.Contains(body, "@cf-bgp-01.cdn.example.com:443") {
+		t.Fatalf("requested target missing: %s", body)
+	}
+	if strings.Contains(body, "@cf-ctcc-01.cdn.example.com:443") {
+		t.Fatalf("unrequested target leaked: %s", body)
 	}
 }
 

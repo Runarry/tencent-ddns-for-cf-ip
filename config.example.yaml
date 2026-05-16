@@ -41,13 +41,18 @@ api:
   listen_addr: ":8080"
   bearer_token: "replace-with-a-long-random-token"
 
-subscription:
-  enabled: false
-  # 公开订阅地址为 /sub/<public_token>，无需 Bearer Token，请使用足够长的随机值。
-  public_token: "replace-with-a-long-random-subscription-token"
-  format: "base64"
-  # 支持 vmess/vless/trojan/ss/hysteria/hysteria2 分享字符串；只会替换实际连接地址。
-  shares: []
+subscriptions:
+  # 公开订阅地址为 /sub/<public_token>?key=<key>，无需 Bearer Token，请使用足够长的随机值。
+  # nodeids 为空时使用全部优选域名；填写后只使用匹配线路的优选域名。
+  # 请求可追加 nodeids=ctcc,bgp 动态收窄线路范围。
+  - name: "ctcc-main"
+    enabled: false
+    public_token: "replace-with-a-long-random-subscription-token"
+    key: "replace-with-a-long-random-subscription-key"
+    format: "base64"
+    nodeids: ["ctcc"]
+    # 支持 vmess/vless/trojan/ss/hysteria/hysteria2 分享字符串；只会替换实际连接地址。
+    shares: []
 
 state:
   state_file: "/data/state.json"

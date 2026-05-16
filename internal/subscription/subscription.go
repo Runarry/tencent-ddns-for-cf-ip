@@ -19,12 +19,13 @@ var (
 )
 
 type Config struct {
-	Shares []string
-	Format string
+	Shares  []string
+	Format  string
+	NodeIDs []string
 }
 
 func Generate(cfg Config, records []state.Record) (string, error) {
-	targets := PreferredTargets(records)
+	targets := PreferredTargets(records, cfg.NodeIDs)
 	if len(targets) == 0 {
 		return "", ErrNoTargets
 	}
@@ -51,12 +52,18 @@ func Generate(cfg Config, records []state.Record) (string, error) {
 	return base64.StdEncoding.EncodeToString([]byte(body)), nil
 }
 
-func PreferredTargets(records []state.Record) []string {
+func PreferredTargets(records []state.Record, nodeIDs []string) []string {
+	allowed := allowedNodeIDs(nodeIDs)
 	candidates := make([]state.Record, 0, len(records))
 	for _, record := range records {
 		fqdn := strings.TrimSpace(record.FQDN)
 		if fqdn == "" || record.NodeID == "fallback" || strings.HasPrefix(fqdn, "*.") || strings.HasPrefix(record.Name, "*.") {
 			continue
+		}
+		if len(allowed) > 0 {
+			if _, ok := allowed[strings.ToLower(strings.TrimSpace(record.NodeID))]; !ok {
+				continue
+			}
 		}
 		record.FQDN = strings.TrimSuffix(fqdn, ".")
 		candidates = append(candidates, record)
@@ -79,6 +86,19 @@ func PreferredTargets(records []state.Record) []string {
 		targets = append(targets, candidate.FQDN)
 	}
 	return targets
+}
+
+func allowedNodeIDs(nodeIDs []string) map[string]struct{} {
+	if len(nodeIDs) == 0 {
+		return nil
+	}
+	allowed := map[string]struct{}{}
+	for _, nodeID := range nodeIDs {
+		if nodeID = strings.ToLower(strings.TrimSpace(nodeID)); nodeID != "" {
+			allowed[nodeID] = struct{}{}
+		}
+	}
+	return allowed
 }
 
 func RewriteShare(share string, target string) (string, error) {

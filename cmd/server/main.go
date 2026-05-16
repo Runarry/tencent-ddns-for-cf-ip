@@ -88,8 +88,8 @@ func main() {
 	}, providerClient, pinger, dnsClient, store, currentState, logger)
 
 	root := api.NewServer(api.Config{
-		Token:        cfg.API.BearerToken,
-		Subscription: cfg.Subscription,
+		Token:         cfg.API.BearerToken,
+		Subscriptions: cfg.Subscriptions,
 	}, service, cfg.Redacted())
 	server := &http.Server{
 		Addr:              cfg.API.ListenAddr,
