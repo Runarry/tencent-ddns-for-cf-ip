@@ -81,6 +81,9 @@ func TestRedactedHidesSubscriptionSecrets(t *testing.T) {
 	if redacted.Subscriptions[0].Name != "ctcc-main" || redacted.Subscriptions[0].NodeIDs[0] != "ctcc" {
 		t.Fatalf("diagnostic fields were not preserved: %#v", redacted.Subscriptions[0])
 	}
+	if cfg.Subscriptions[0].PublicToken == "" || cfg.Subscriptions[0].Key == "" || cfg.Subscriptions[0].Shares == nil {
+		t.Fatalf("redaction mutated original config: %#v", cfg.Subscriptions[0])
+	}
 }
 
 func TestSubscriptionValidation(t *testing.T) {

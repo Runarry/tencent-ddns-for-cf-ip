@@ -333,6 +333,7 @@ func (c Config) Redacted() Config {
 	c.Provider.Key = ""
 	c.DNSPod.SecretKey = ""
 	c.API.BearerToken = ""
+	c.Subscriptions = append([]SubscriptionConfig(nil), c.Subscriptions...)
 	for i := range c.Subscriptions {
 		c.Subscriptions[i].PublicToken = ""
 		c.Subscriptions[i].Key = ""
