@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadMultipleSubscriptions(t *testing.T) {
@@ -51,6 +52,82 @@ subscriptions:
 	}
 	if cfg.Subscriptions[0].Format != "base64" || cfg.Subscriptions[0].Key != "subscription-key" || cfg.Subscriptions[0].NodeIDs[0] != "ctcc" {
 		t.Fatalf("subscription was not normalized: %#v", cfg.Subscriptions[0])
+	}
+}
+
+func TestLoadSpeedTestConfigAndEnvOverrides(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	data := []byte(`
+provider:
+  source: web
+  nodeids: ["ctcc"]
+dnspod:
+  secret_id: id
+  secret_key: key
+  domain: example.com
+sync:
+  managed_prefix: cf
+  default_nodeid: ctcc
+  max_records_per_node: 2
+  ping_threshold_ms: 1
+  ping_concurrency: 1
+  ping_packets: 1
+  speed_test:
+    enabled: true
+    url: "https://download.example.com/probe.bin"
+api:
+  bearer_token: secret
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SYNC_SPEED_TEST_DOWNLOAD_BYTES", "2048")
+	t.Setenv("SYNC_SPEED_TEST_TIMEOUT", "5s")
+	t.Setenv("SYNC_SPEED_TEST_CONCURRENCY", "3")
+	t.Setenv("SYNC_SPEED_TEST_CANDIDATES_PER_NODE", "4")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Sync.SpeedTest.Enabled || cfg.Sync.SpeedTest.URL != "https://download.example.com/probe.bin" {
+		t.Fatalf("speed test config was not loaded: %#v", cfg.Sync.SpeedTest)
+	}
+	if cfg.Sync.SpeedTest.DownloadBytes != 2048 || cfg.Sync.SpeedTest.Timeout.Duration.String() != "5s" || cfg.Sync.SpeedTest.Concurrency != 3 || cfg.Sync.SpeedTest.CandidatesPerNode != 4 {
+		t.Fatalf("speed test env overrides were not applied: %#v", cfg.Sync.SpeedTest)
+	}
+}
+
+func TestLoadSpeedTestDefaultCandidatesPerNode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	data := []byte(`
+provider:
+  source: web
+  nodeids: ["ctcc"]
+dnspod:
+  secret_id: id
+  secret_key: key
+  domain: example.com
+sync:
+  managed_prefix: cf
+  default_nodeid: ctcc
+  max_records_per_node: 2
+  ping_threshold_ms: 1
+  ping_concurrency: 1
+  ping_packets: 1
+api:
+  bearer_token: secret
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sync.SpeedTest.CandidatesPerNode != 6 {
+		t.Fatalf("candidates_per_node = %d", cfg.Sync.SpeedTest.CandidatesPerNode)
 	}
 }
 
@@ -162,6 +239,26 @@ func TestSubscriptionValidation(t *testing.T) {
 	}
 }
 
+func TestSpeedTestValidation(t *testing.T) {
+	cfg := validConfig()
+	cfg.Sync.SpeedTest.Enabled = true
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected missing speed test URL error")
+	}
+	cfg.Sync.SpeedTest.URL = "http://example.com/probe.bin"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected non-https speed test URL error")
+	}
+	cfg.Sync.SpeedTest.URL = "https://example.com/probe.bin"
+	cfg.Sync.SpeedTest.DownloadBytes = 1024
+	cfg.Sync.SpeedTest.Timeout.Duration = 8 * time.Second
+	cfg.Sync.SpeedTest.Concurrency = 1
+	cfg.Sync.SpeedTest.CandidatesPerNode = 1
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func validConfig() Config {
 	return Config{
 		Provider: ProviderConfig{Source: "web", NodeIDs: []string{"ctcc"}},
@@ -173,6 +270,12 @@ func validConfig() Config {
 			PingThresholdMS:   1,
 			PingConcurrency:   1,
 			PingPackets:       1,
+			SpeedTest: SpeedTestConfig{
+				DownloadBytes:     1024 * 1024,
+				Timeout:           Duration{Duration: 8 * time.Second},
+				Concurrency:       8,
+				CandidatesPerNode: 3,
+			},
 		},
 		API: APIConfig{BearerToken: "secret"},
 	}

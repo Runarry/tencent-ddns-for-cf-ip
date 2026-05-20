@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,7 +20,7 @@ import (
 )
 
 func TestAuth(t *testing.T) {
-	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, fakeDNS{}, fakeStore{}, state.Empty(), slog.Default())
+	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, nil, fakeDNS{}, fakeStore{}, state.Empty(), slog.Default())
 	handler := NewServer(Config{Token: "secret"}, service, config.Config{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/records", nil)
@@ -38,6 +39,44 @@ func TestAuth(t *testing.T) {
 	}
 }
 
+func TestConfigEndpointIncludesSpeedTestConfig(t *testing.T) {
+	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, nil, fakeDNS{}, fakeStore{}, state.Empty(), slog.Default())
+	handler := NewServer(Config{Token: "secret"}, service, config.Config{
+		Sync: config.SyncConfig{
+			SpeedTest: config.SpeedTestConfig{
+				Enabled:           true,
+				URL:               "https://download.example.com/probe.bin",
+				DownloadBytes:     2048,
+				Concurrency:       3,
+				CandidatesPerNode: 4,
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d", rr.Code)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	syncConfig, ok := got["sync"].(map[string]any)
+	if !ok {
+		t.Fatalf("sync config missing from response: %#v", got)
+	}
+	speedTest, ok := syncConfig["speed_test"].(map[string]any)
+	if !ok {
+		t.Fatalf("speed test config missing from response: %#v", syncConfig)
+	}
+	if speedTest["enabled"] != true || speedTest["url"] != "https://download.example.com/probe.bin" || speedTest["download_bytes"] != float64(2048) {
+		t.Fatalf("speed test config missing from response: %#v", speedTest)
+	}
+}
+
 func TestPublicSubscriptionEndpoint(t *testing.T) {
 	initial := state.State{
 		Records: []state.Record{
@@ -45,7 +84,7 @@ func TestPublicSubscriptionEndpoint(t *testing.T) {
 			{Name: "cf-bgp-01.cdn", FQDN: "cf-bgp-01.cdn.example.com", NodeID: "bgp", LatencyMS: 10},
 		},
 	}
-	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, fakeDNS{}, fakeStore{}, initial, slog.Default())
+	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, nil, fakeDNS{}, fakeStore{}, initial, slog.Default())
 	handler := NewServer(Config{
 		Token: "secret",
 		Subscriptions: []config.SubscriptionConfig{
@@ -130,7 +169,7 @@ func TestPublicSubscriptionEndpoint(t *testing.T) {
 }
 
 func TestPublicSubscriptionEndpointReportsNoTargets(t *testing.T) {
-	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, fakeDNS{}, fakeStore{}, state.Empty(), slog.Default())
+	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, nil, fakeDNS{}, fakeStore{}, state.Empty(), slog.Default())
 	handler := NewServer(Config{
 		Token: "secret",
 		Subscriptions: []config.SubscriptionConfig{
@@ -161,7 +200,7 @@ func TestPublicSubscriptionEndpointQueryNodeIDsNarrowConfiguredNodeIDs(t *testin
 			{Name: "cf-cucc-01.cdn", FQDN: "cf-cucc-01.cdn.example.com", NodeID: "cucc", LatencyMS: 5},
 		},
 	}
-	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, fakeDNS{}, fakeStore{}, initial, slog.Default())
+	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, nil, fakeDNS{}, fakeStore{}, initial, slog.Default())
 	handler := NewServer(Config{
 		Token: "secret",
 		Subscriptions: []config.SubscriptionConfig{
@@ -209,7 +248,7 @@ func TestPublicSubscriptionEndpointQueryNodeIDsCanFilterUnrestrictedSubscription
 			{Name: "cf-bgp-01.cdn", FQDN: "cf-bgp-01.cdn.example.com", NodeID: "bgp", LatencyMS: 10},
 		},
 	}
-	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, fakeDNS{}, fakeStore{}, initial, slog.Default())
+	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, nil, fakeDNS{}, fakeStore{}, initial, slog.Default())
 	handler := NewServer(Config{
 		Token: "secret",
 		Subscriptions: []config.SubscriptionConfig{

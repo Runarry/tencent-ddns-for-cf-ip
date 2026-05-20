@@ -69,6 +69,9 @@ func PreferredTargets(records []state.Record, nodeIDs []string) []string {
 		candidates = append(candidates, record)
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].SpeedBPS != candidates[j].SpeedBPS {
+			return candidates[i].SpeedBPS > candidates[j].SpeedBPS
+		}
 		if candidates[i].LatencyMS != candidates[j].LatencyMS {
 			return candidates[i].LatencyMS < candidates[j].LatencyMS
 		}

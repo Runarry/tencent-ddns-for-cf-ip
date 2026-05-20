@@ -14,6 +14,7 @@ import (
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/dnspod"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/ping"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/provider"
+	"github.com/sleep/tencent-ddns-for-cf-ip/internal/speedtest"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/state"
 )
 
@@ -30,7 +31,13 @@ type Config struct {
 	RecordLine           string
 	TTL                  uint64
 	Interval             time.Duration
+	SpeedTest            SpeedTestConfig
 	Fallback             FallbackConfig
+}
+
+type SpeedTestConfig struct {
+	Enabled           bool
+	CandidatesPerNode int
 }
 
 type FallbackConfig struct {
@@ -48,9 +55,22 @@ type Pinger interface {
 	Check(ctx context.Context, candidates []provider.Candidate) []ping.Result
 }
 
+type SpeedTester interface {
+	Check(ctx context.Context, candidates []provider.Candidate) []speedtest.Result
+}
+
 type StateStore interface {
 	Load() (state.State, error)
 	Save(state.State) error
+}
+
+type selectedResult struct {
+	Candidate        provider.Candidate
+	Latency          time.Duration
+	SpeedBPS         int64
+	DownloadBytes    int64
+	DownloadDuration time.Duration
+	TTFB             time.Duration
 }
 
 type Summary struct {
@@ -75,6 +95,7 @@ type Service struct {
 	cfg      Config
 	provider Provider
 	pinger   Pinger
+	speed    SpeedTester
 	dns      dnspod.Client
 	store    StateStore
 	logger   *slog.Logger
@@ -87,7 +108,7 @@ type Service struct {
 	stopCh   chan struct{}
 }
 
-func NewService(cfg Config, provider Provider, pinger Pinger, dns dnspod.Client, store StateStore, initial state.State, logger *slog.Logger) *Service {
+func NewService(cfg Config, provider Provider, pinger Pinger, speed SpeedTester, dns dnspod.Client, store StateStore, initial state.State, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -95,6 +116,7 @@ func NewService(cfg Config, provider Provider, pinger Pinger, dns dnspod.Client,
 		cfg:      cfg,
 		provider: provider,
 		pinger:   pinger,
+		speed:    speed,
 		dns:      dns,
 		store:    store,
 		logger:   logger,
@@ -215,7 +237,7 @@ func (s *Service) sync(ctx context.Context, now time.Time) ([]state.Record, chan
 		all = append(all, grouped[nodeID]...)
 	}
 	checked := s.pinger.Check(ctx, all)
-	selected := selectByNode(checked, s.cfg.MaxRecordsPerNode)
+	selected := s.selectByNode(ctx, checked)
 	desired := desiredRecords(selected, s.cfg, now)
 
 	existing, err := s.dns.ListRecords(ctx)
@@ -395,7 +417,75 @@ func (s *Service) managedExactNames(desired map[string]state.Record) []string {
 	return names
 }
 
-func selectByNode(results []ping.Result, limit int) map[string][]ping.Result {
+func (s *Service) selectByNode(ctx context.Context, results []ping.Result) map[string][]selectedResult {
+	byNode := groupAliveByNode(results)
+	if !s.cfg.SpeedTest.Enabled || s.speed == nil {
+		return limitByPing(byNode, s.cfg.MaxRecordsPerNode)
+	}
+
+	candidatesPerNode := s.cfg.SpeedTest.CandidatesPerNode
+	if candidatesPerNode <= 0 {
+		candidatesPerNode = s.cfg.MaxRecordsPerNode * 3
+	}
+	if candidatesPerNode <= 0 {
+		candidatesPerNode = 1
+	}
+
+	toMeasure := make([]provider.Candidate, 0)
+	for _, results := range byNode {
+		for _, result := range firstPingResults(results, candidatesPerNode) {
+			toMeasure = append(toMeasure, result.Candidate)
+		}
+	}
+	speedResults := s.speed.Check(ctx, toMeasure)
+	byCandidate := map[string]speedtest.Result{}
+	for _, result := range speedResults {
+		if !result.Success {
+			continue
+		}
+		byCandidate[resultKey(result.Candidate)] = result
+	}
+
+	selected := map[string][]selectedResult{}
+	for nodeID, pingResults := range byNode {
+		candidates := firstPingResults(pingResults, candidatesPerNode)
+		measured := make([]selectedResult, 0, len(candidates))
+		for _, pingResult := range candidates {
+			speedResult, ok := byCandidate[resultKey(pingResult.Candidate)]
+			if !ok {
+				continue
+			}
+			measured = append(measured, selectedResult{
+				Candidate:        pingResult.Candidate,
+				Latency:          pingResult.Latency,
+				SpeedBPS:         speedResult.SpeedBPS,
+				DownloadBytes:    speedResult.DownloadBytes,
+				DownloadDuration: speedResult.DownloadDuration,
+				TTFB:             speedResult.TTFB,
+			})
+		}
+		if len(measured) == 0 {
+			selected[nodeID] = selectByPing(pingResults, s.cfg.MaxRecordsPerNode)
+			continue
+		}
+		sort.SliceStable(measured, func(i, j int) bool {
+			if measured[i].SpeedBPS != measured[j].SpeedBPS {
+				return measured[i].SpeedBPS > measured[j].SpeedBPS
+			}
+			if measured[i].TTFB != measured[j].TTFB {
+				return measured[i].TTFB < measured[j].TTFB
+			}
+			return measured[i].Latency < measured[j].Latency
+		})
+		if len(measured) > s.cfg.MaxRecordsPerNode {
+			measured = measured[:s.cfg.MaxRecordsPerNode]
+		}
+		selected[nodeID] = measured
+	}
+	return selected
+}
+
+func groupAliveByNode(results []ping.Result) map[string][]ping.Result {
 	byNode := map[string][]ping.Result{}
 	for _, result := range results {
 		if !result.Alive {
@@ -408,14 +498,45 @@ func selectByNode(results []ping.Result, limit int) map[string][]ping.Result {
 		sort.SliceStable(byNode[nodeID], func(i, j int) bool {
 			return byNode[nodeID][i].Latency < byNode[nodeID][j].Latency
 		})
-		if len(byNode[nodeID]) > limit {
-			byNode[nodeID] = byNode[nodeID][:limit]
-		}
 	}
 	return byNode
 }
 
-func desiredRecords(selected map[string][]ping.Result, cfg Config, now time.Time) map[string]state.Record {
+func limitByPing(byNode map[string][]ping.Result, limit int) map[string][]selectedResult {
+	selected := map[string][]selectedResult{}
+	for nodeID, results := range byNode {
+		selected[nodeID] = selectByPing(results, limit)
+	}
+	return selected
+}
+
+func selectByPing(results []ping.Result, limit int) []selectedResult {
+	results = firstPingResults(results, limit)
+	selected := make([]selectedResult, 0, len(results))
+	for _, result := range results {
+		selected = append(selected, selectedResult{
+			Candidate: result.Candidate,
+			Latency:   result.Latency,
+		})
+	}
+	return selected
+}
+
+func firstPingResults(results []ping.Result, limit int) []ping.Result {
+	if limit <= 0 {
+		return nil
+	}
+	if len(results) > limit {
+		return results[:limit]
+	}
+	return results
+}
+
+func resultKey(candidate provider.Candidate) string {
+	return strings.ToLower(candidate.NodeID) + "|" + candidate.IP
+}
+
+func desiredRecords(selected map[string][]selectedResult, cfg Config, now time.Time) map[string]state.Record {
 	desired := map[string]state.Record{}
 	for nodeID, results := range selected {
 		nodeLabel := labelForNode(nodeID, cfg.NodeLabels)
@@ -423,13 +544,17 @@ func desiredRecords(selected map[string][]ping.Result, cfg Config, now time.Time
 			name := joinSubdomain(fmt.Sprintf("%s-%s-%02d", cfg.ManagedPrefix, nodeLabel, i+1), cfg.ManagedBaseSubdomain)
 			value := result.Candidate.IP
 			desired[name] = state.Record{
-				Name:      name,
-				FQDN:      name + "." + cfg.Domain,
-				Type:      dnspod.TypeForIP(value),
-				Value:     value,
-				NodeID:    nodeID,
-				LatencyMS: result.Latency.Milliseconds(),
-				UpdatedAt: now,
+				Name:          name,
+				FQDN:          name + "." + cfg.Domain,
+				Type:          dnspod.TypeForIP(value),
+				Value:         value,
+				NodeID:        nodeID,
+				LatencyMS:     result.Latency.Milliseconds(),
+				SpeedBPS:      result.SpeedBPS,
+				DownloadBytes: result.DownloadBytes,
+				DownloadMS:    result.DownloadDuration.Milliseconds(),
+				TTFBMS:        result.TTFB.Milliseconds(),
+				UpdatedAt:     now,
 			}
 		}
 	}
@@ -454,28 +579,27 @@ func desiredRecords(selected map[string][]ping.Result, cfg Config, now time.Time
 	return desired
 }
 
-func defaultRecord(selected map[string][]ping.Result, cfg Config, now time.Time) (state.Record, bool) {
+func defaultRecord(selected map[string][]selectedResult, cfg Config, now time.Time) (state.Record, bool) {
 	defaultNode := strings.ToLower(strings.TrimSpace(cfg.DefaultNodeID))
 	results := selected[defaultNode]
 	if len(results) == 0 || strings.TrimSpace(cfg.ManagedBaseSubdomain) == "" {
 		return state.Record{}, false
 	}
 	best := results[0]
-	for _, result := range results[1:] {
-		if result.Latency < best.Latency {
-			best = result
-		}
-	}
 	value := best.Candidate.IP
 	name := strings.ToLower(strings.TrimSpace(cfg.ManagedBaseSubdomain))
 	return state.Record{
-		Name:      name,
-		FQDN:      name + "." + cfg.Domain,
-		Type:      dnspod.TypeForIP(value),
-		Value:     value,
-		NodeID:    defaultNode,
-		LatencyMS: best.Latency.Milliseconds(),
-		UpdatedAt: now,
+		Name:          name,
+		FQDN:          name + "." + cfg.Domain,
+		Type:          dnspod.TypeForIP(value),
+		Value:         value,
+		NodeID:        defaultNode,
+		LatencyMS:     best.Latency.Milliseconds(),
+		SpeedBPS:      best.SpeedBPS,
+		DownloadBytes: best.DownloadBytes,
+		DownloadMS:    best.DownloadDuration.Milliseconds(),
+		TTFBMS:        best.TTFB.Milliseconds(),
+		UpdatedAt:     now,
 	}, true
 }
 

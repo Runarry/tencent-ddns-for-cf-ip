@@ -31,6 +31,15 @@ sync:
   ping_threshold_ms: 800
   ping_concurrency: 32
   ping_packets: 3
+  speed_test:
+    enabled: false
+    # 启用后填写一个走 Cloudflare 的真实 HTTPS 业务 URL。
+    url: "https://your-cf-domain.example.com/probe.bin"
+    download_bytes: 1048576
+    timeout: "8s"
+    concurrency: 8
+    # 默认会自动使用 max_records_per_node * 3。
+    candidates_per_node: 15
   fallback:
     enabled: true
     wildcard_subdomain: "*.cdn"

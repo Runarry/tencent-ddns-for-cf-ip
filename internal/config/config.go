@@ -73,7 +73,17 @@ type SyncConfig struct {
 	PingThresholdMS      int               `yaml:"ping_threshold_ms" json:"ping_threshold_ms"`
 	PingConcurrency      int               `yaml:"ping_concurrency" json:"ping_concurrency"`
 	PingPackets          int               `yaml:"ping_packets" json:"ping_packets"`
+	SpeedTest            SpeedTestConfig   `yaml:"speed_test" json:"speed_test"`
 	Fallback             FallbackConfig    `yaml:"fallback" json:"fallback"`
+}
+
+type SpeedTestConfig struct {
+	Enabled           bool     `yaml:"enabled" json:"enabled"`
+	URL               string   `yaml:"url" json:"url"`
+	DownloadBytes     int64    `yaml:"download_bytes" json:"download_bytes"`
+	Timeout           Duration `yaml:"timeout" json:"timeout"`
+	Concurrency       int      `yaml:"concurrency" json:"concurrency"`
+	CandidatesPerNode int      `yaml:"candidates_per_node" json:"candidates_per_node"`
 }
 
 type FallbackConfig struct {
@@ -158,6 +168,19 @@ func normalize(cfg *Config) {
 		}
 		sub.NodeIDs = nodeIDs
 	}
+	cfg.Sync.SpeedTest.URL = strings.TrimSpace(cfg.Sync.SpeedTest.URL)
+	if cfg.Sync.SpeedTest.DownloadBytes <= 0 {
+		cfg.Sync.SpeedTest.DownloadBytes = 1024 * 1024
+	}
+	if cfg.Sync.SpeedTest.Timeout.Duration <= 0 {
+		cfg.Sync.SpeedTest.Timeout.Duration = 8 * time.Second
+	}
+	if cfg.Sync.SpeedTest.Concurrency <= 0 {
+		cfg.Sync.SpeedTest.Concurrency = 8
+	}
+	if cfg.Sync.SpeedTest.CandidatesPerNode <= 0 && cfg.Sync.MaxRecordsPerNode > 0 {
+		cfg.Sync.SpeedTest.CandidatesPerNode = cfg.Sync.MaxRecordsPerNode * 3
+	}
 }
 
 func defaults() Config {
@@ -185,6 +208,11 @@ func defaults() Config {
 			PingThresholdMS:   800,
 			PingConcurrency:   32,
 			PingPackets:       3,
+			SpeedTest: SpeedTestConfig{
+				DownloadBytes: 1024 * 1024,
+				Timeout:       Duration{Duration: 8 * time.Second},
+				Concurrency:   8,
+			},
 			Fallback: FallbackConfig{
 				Type: "CNAME",
 			},
@@ -223,6 +251,12 @@ func applyEnv(cfg *Config) {
 	setInt(&cfg.Sync.PingThresholdMS, "SYNC_PING_THRESHOLD_MS")
 	setInt(&cfg.Sync.PingConcurrency, "SYNC_PING_CONCURRENCY")
 	setInt(&cfg.Sync.PingPackets, "SYNC_PING_PACKETS")
+	setBool(&cfg.Sync.SpeedTest.Enabled, "SYNC_SPEED_TEST_ENABLED")
+	setString(&cfg.Sync.SpeedTest.URL, "SYNC_SPEED_TEST_URL")
+	setInt64(&cfg.Sync.SpeedTest.DownloadBytes, "SYNC_SPEED_TEST_DOWNLOAD_BYTES")
+	setDuration(&cfg.Sync.SpeedTest.Timeout, "SYNC_SPEED_TEST_TIMEOUT")
+	setInt(&cfg.Sync.SpeedTest.Concurrency, "SYNC_SPEED_TEST_CONCURRENCY")
+	setInt(&cfg.Sync.SpeedTest.CandidatesPerNode, "SYNC_SPEED_TEST_CANDIDATES_PER_NODE")
 	setBool(&cfg.Sync.Fallback.Enabled, "SYNC_FALLBACK_ENABLED")
 	setString(&cfg.Sync.Fallback.WildcardSubdomain, "SYNC_FALLBACK_WILDCARD_SUBDOMAIN")
 	setString(&cfg.Sync.Fallback.Target, "SYNC_FALLBACK_TARGET")
@@ -279,6 +313,26 @@ func (c Config) Validate() error {
 	}
 	if c.Sync.PingPackets < 1 {
 		return errors.New("sync.ping_packets must be greater than 0")
+	}
+	if c.Sync.SpeedTest.Enabled {
+		if c.Sync.SpeedTest.URL == "" {
+			return errors.New("sync.speed_test.url must not be empty when speed_test is enabled")
+		}
+		if !strings.HasPrefix(strings.ToLower(c.Sync.SpeedTest.URL), "https://") {
+			return errors.New("sync.speed_test.url must use https")
+		}
+	}
+	if c.Sync.SpeedTest.DownloadBytes < 1 {
+		return errors.New("sync.speed_test.download_bytes must be greater than 0")
+	}
+	if c.Sync.SpeedTest.Timeout.Duration <= 0 {
+		return errors.New("sync.speed_test.timeout must be greater than 0")
+	}
+	if c.Sync.SpeedTest.Concurrency < 1 {
+		return errors.New("sync.speed_test.concurrency must be greater than 0")
+	}
+	if c.Sync.SpeedTest.CandidatesPerNode < 1 {
+		return errors.New("sync.speed_test.candidates_per_node must be greater than 0")
 	}
 	if c.Sync.Fallback.Enabled {
 		if c.Sync.Fallback.WildcardSubdomain == "" {
@@ -381,6 +435,17 @@ func setInt(target *int, key string) {
 		return
 	}
 	parsed, err := strconv.Atoi(value)
+	if err == nil {
+		*target = parsed
+	}
+}
+
+func setInt64(target *int64, key string) {
+	value := os.Getenv(key)
+	if value == "" {
+		return
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
 	if err == nil {
 		*target = parsed
 	}

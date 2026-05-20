@@ -15,6 +15,7 @@ import (
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/dnspod"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/ping"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/provider"
+	"github.com/sleep/tencent-ddns-for-cf-ip/internal/speedtest"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/state"
 	syncsvc "github.com/sleep/tencent-ddns-for-cf-ip/internal/sync"
 )
@@ -56,6 +57,15 @@ func main() {
 		Concurrency:  cfg.Sync.PingConcurrency,
 		PacketsCount: cfg.Sync.PingPackets,
 	})
+	var speedTester syncsvc.SpeedTester
+	if cfg.Sync.SpeedTest.Enabled {
+		speedTester = speedtest.NewTester(speedtest.Config{
+			URL:           cfg.Sync.SpeedTest.URL,
+			DownloadBytes: cfg.Sync.SpeedTest.DownloadBytes,
+			Timeout:       cfg.Sync.SpeedTest.Timeout.Duration,
+			Concurrency:   cfg.Sync.SpeedTest.Concurrency,
+		})
+	}
 	dnsClient, err := dnspod.NewClient(dnspod.Config{
 		SecretID:   cfg.DNSPod.SecretID,
 		SecretKey:  cfg.DNSPod.SecretKey,
@@ -79,13 +89,17 @@ func main() {
 		RecordLine:           cfg.DNSPod.RecordLine,
 		TTL:                  cfg.DNSPod.TTL,
 		Interval:             cfg.Sync.Interval.Duration,
+		SpeedTest: syncsvc.SpeedTestConfig{
+			Enabled:           cfg.Sync.SpeedTest.Enabled,
+			CandidatesPerNode: cfg.Sync.SpeedTest.CandidatesPerNode,
+		},
 		Fallback: syncsvc.FallbackConfig{
 			Enabled:           cfg.Sync.Fallback.Enabled,
 			WildcardSubdomain: cfg.Sync.Fallback.WildcardSubdomain,
 			Target:            cfg.Sync.Fallback.Target,
 			Type:              cfg.Sync.Fallback.Type,
 		},
-	}, providerClient, pinger, dnsClient, store, currentState, logger)
+	}, providerClient, pinger, speedTester, dnsClient, store, currentState, logger)
 
 	root := api.NewServer(api.Config{
 		Token:         cfg.API.BearerToken,

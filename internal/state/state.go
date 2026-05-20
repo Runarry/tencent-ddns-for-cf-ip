@@ -28,14 +28,18 @@ type SyncSnapshot struct {
 }
 
 type Record struct {
-	RecordID  uint64    `json:"record_id"`
-	Name      string    `json:"name"`
-	FQDN      string    `json:"fqdn"`
-	Type      string    `json:"type"`
-	Value     string    `json:"value"`
-	NodeID    string    `json:"nodeid"`
-	LatencyMS int64     `json:"latency_ms"`
-	UpdatedAt time.Time `json:"updated_at"`
+	RecordID      uint64    `json:"record_id"`
+	Name          string    `json:"name"`
+	FQDN          string    `json:"fqdn"`
+	Type          string    `json:"type"`
+	Value         string    `json:"value"`
+	NodeID        string    `json:"nodeid"`
+	LatencyMS     int64     `json:"latency_ms"`
+	SpeedBPS      int64     `json:"speed_bps"`
+	DownloadBytes int64     `json:"download_bytes"`
+	DownloadMS    int64     `json:"download_ms"`
+	TTFBMS        int64     `json:"ttfb_ms"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type Store struct {

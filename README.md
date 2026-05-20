@@ -13,6 +13,7 @@
 - 支持通配符 CNAME 回落：删除 `cf-cctcc-01.cdn.q.example.com` 后，可由 `*.cdn.q.example.com` 回落到 `cdn.q.example.com`。
 - 可公开多个长路径订阅地址，将输入的 3x-ui/v2ray 分享字符串批量替换为当前优选域名。
 - 每个 IP 都会 ping，ping 不通或平均延迟超过默认 `800ms` 会被丢弃。
+- 可选真实 HTTPS 测速：ping 预筛后连接候选 IP、使用你的 Cloudflare 业务域名下载固定字节数，并按实测速率更新受控 DNS 记录排序。
 - JSON 状态文件持久化，适合 Docker 挂载 `/data`。
 
 ## 快速开始
@@ -50,6 +51,12 @@ docker compose up -d --build
 - `SYNC_DEFAULT_NODEID`：默认域名使用哪个线路的最快节点，默认 `ctcc`。
 - `SYNC_MAX_RECORDS_PER_NODE`：每个线路最多发布记录数，默认 `5`。
 - `SYNC_PING_THRESHOLD_MS`：最大允许延迟，默认 `800`。
+- `SYNC_SPEED_TEST_ENABLED`：是否启用真实 HTTPS 测速，默认 `false`。
+- `SYNC_SPEED_TEST_URL`：测速使用的真实 Cloudflare HTTPS URL，例如 `https://cdn.example.com/probe.bin`。
+- `SYNC_SPEED_TEST_DOWNLOAD_BYTES`：每个候选 IP 最多下载字节数，默认 `1048576`。
+- `SYNC_SPEED_TEST_TIMEOUT`：单个 IP 测速超时，默认 `8s`。
+- `SYNC_SPEED_TEST_CONCURRENCY`：测速并发，默认 `8`。
+- `SYNC_SPEED_TEST_CANDIDATES_PER_NODE`：每条线路测速候选数，默认 `SYNC_MAX_RECORDS_PER_NODE * 3`。
 
 订阅参数：
 
