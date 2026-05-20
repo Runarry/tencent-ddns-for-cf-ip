@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cloudflare IP Admin</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section id="loginView" class="login-shell" hidden>
+        <form id="loginForm" class="login-panel">
+          <div>
+            <p class="eyebrow">Tencent DDNS</p>
+            <h1>Cloudflare 管理</h1>
+          </div>
+          <label>
+            <span>管理密码</span>
+            <input id="passwordInput" type="password" autocomplete="current-password" required />
+          </label>
+          <button class="primary" type="submit">登录</button>
+          <p id="loginError" class="error" role="alert"></p>
+        </form>
+      </section>
+
+      <section id="adminView" class="workspace" hidden>
+        <aside class="sidebar">
+          <div>
+            <p class="eyebrow">Tencent DDNS</p>
+            <h1>管理工具</h1>
+          </div>
+          <nav class="tabs" aria-label="管理视图">
+            <button class="tab active" data-tab="overview" type="button">总览</button>
+            <button class="tab" data-tab="subscriptions" type="button">订阅</button>
+            <button class="tab" data-tab="records" type="button">优选 IP</button>
+            <button class="tab" data-tab="speed" type="button">测速</button>
+          </nav>
+          <button id="logoutButton" class="secondary" type="button">退出</button>
+        </aside>
+
+        <section class="content">
+          <header class="topbar">
+            <div>
+              <p id="syncState" class="eyebrow">状态读取中</p>
+              <h2 id="pageTitle">总览</h2>
+            </div>
+            <div class="actions">
+              <button id="refreshButton" class="secondary" type="button">刷新</button>
+              <button id="updateButton" class="primary" type="button">手动同步</button>
+            </div>
+          </header>
+
+          <section id="overviewPanel" class="panel active-panel">
+            <div class="metrics">
+              <div class="metric"><span>记录数</span><strong id="recordCount">0</strong></div>
+              <div class="metric"><span>订阅数</span><strong id="subscriptionCount">0</strong></div>
+              <div class="metric"><span>下次运行</span><strong id="nextRun">-</strong></div>
+              <div class="metric"><span>最近结果</span><strong id="lastResult">-</strong></div>
+            </div>
+            <div id="recentRecords" class="list"></div>
+          </section>
+
+          <section id="subscriptionsPanel" class="panel">
+            <div class="section-head">
+              <h3>订阅</h3>
+              <button id="newSubscriptionButton" class="primary" type="button">新增</button>
+            </div>
+            <div id="subscriptionList" class="list"></div>
+          </section>
+
+          <section id="recordsPanel" class="panel">
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>线路</th>
+                    <th>FQDN</th>
+                    <th>IP</th>
+                    <th>延迟</th>
+                    <th>更新时间</th>
+                  </tr>
+                </thead>
+                <tbody id="recordsTable"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="speedPanel" class="panel">
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>线路</th>
+                    <th>FQDN</th>
+                    <th>速度</th>
+                    <th>TTFB</th>
+                    <th>下载</th>
+                    <th>耗时</th>
+                  </tr>
+                </thead>
+                <tbody id="speedTable"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+      </section>
+
+      <dialog id="subscriptionDialog">
+        <form id="subscriptionForm" method="dialog" class="dialog-form">
+          <header>
+            <h3 id="dialogTitle">订阅</h3>
+            <button class="icon" value="cancel" type="submit" aria-label="关闭">×</button>
+          </header>
+          <input id="subscriptionId" type="hidden" />
+          <label class="check-row">
+            <input id="subscriptionEnabled" type="checkbox" />
+            <span>启用</span>
+          </label>
+          <label>
+            <span>名称</span>
+            <input id="subscriptionName" type="text" />
+          </label>
+          <label>
+            <span>Public Token</span>
+            <input id="subscriptionToken" type="text" placeholder="留空则自动生成或保留原值" />
+          </label>
+          <label>
+            <span>Key</span>
+            <input id="subscriptionKey" type="text" placeholder="留空则自动生成或保留原值" />
+          </label>
+          <label>
+            <span>线路</span>
+            <input id="subscriptionNodeids" type="text" placeholder="ctcc,bgp,cucc" />
+          </label>
+          <label>
+            <span>分享字符串</span>
+            <textarea id="subscriptionShares" rows="8" spellcheck="false"></textarea>
+          </label>
+          <p id="dialogSecret" class="secret"></p>
+          <menu>
+            <button class="secondary" value="cancel" type="submit">取消</button>
+            <button id="deleteSubscriptionButton" class="danger" type="button">删除</button>
+            <button id="rotateKeyButton" class="secondary" type="button">轮换 Key</button>
+            <button id="saveSubscriptionButton" class="primary" type="button">保存</button>
+          </menu>
+        </form>
+      </dialog>
+
+      <div id="toast" class="toast" hidden></div>
+    </main>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

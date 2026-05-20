@@ -17,6 +17,7 @@ import (
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/provider"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/speedtest"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/state"
+	"github.com/sleep/tencent-ddns-for-cf-ip/internal/subscriptions"
 	syncsvc "github.com/sleep/tencent-ddns-for-cf-ip/internal/sync"
 )
 
@@ -38,6 +39,11 @@ func main() {
 	if err != nil {
 		logger.Warn("load state failed; starting with empty state", "error", err)
 		currentState = state.Empty()
+	}
+	subscriptionManager, err := subscriptions.NewManager(cfg.Subscriptions, subscriptions.NewStore(cfg.State.SubscriptionsFile))
+	if err != nil {
+		logger.Error("load subscriptions", "error", err)
+		os.Exit(1)
 	}
 
 	providerClient := provider.NewClient(provider.Config{
@@ -102,8 +108,9 @@ func main() {
 	}, providerClient, pinger, speedTester, dnsClient, store, currentState, logger)
 
 	root := api.NewServer(api.Config{
-		Token:         cfg.API.BearerToken,
-		Subscriptions: cfg.Subscriptions,
+		Token:               cfg.API.BearerToken,
+		Subscriptions:       cfg.Subscriptions,
+		SubscriptionManager: subscriptionManager,
 	}, service, cfg.Redacted())
 	server := &http.Server{
 		Addr:              cfg.API.ListenAddr,

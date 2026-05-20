@@ -65,3 +65,5 @@ subscriptions:
 
 state:
   state_file: "/data/state.json"
+  # Runtime-editable subscriptions managed by the Cloudflare Pages/Workers admin tool.
+  subscriptions_file: "/data/subscriptions.json"

@@ -99,7 +99,8 @@ type APIConfig struct {
 }
 
 type StateConfig struct {
-	File string `yaml:"state_file" json:"state_file"`
+	File              string `yaml:"state_file" json:"state_file"`
+	SubscriptionsFile string `yaml:"subscriptions_file" json:"subscriptions_file"`
 }
 
 type SubscriptionConfig struct {
@@ -221,7 +222,8 @@ func defaults() Config {
 			ListenAddr: ":8080",
 		},
 		State: StateConfig{
-			File: "/data/state.json",
+			File:              "/data/state.json",
+			SubscriptionsFile: "/data/subscriptions.json",
 		},
 	}
 }
@@ -265,6 +267,8 @@ func applyEnv(cfg *Config) {
 	setString(&cfg.API.ListenAddr, "API_LISTEN_ADDR")
 	setString(&cfg.API.BearerToken, "API_BEARER_TOKEN")
 	setString(&cfg.State.File, "STATE_FILE")
+	setString(&cfg.State.SubscriptionsFile, "SUBSCRIPTIONS_STATE_FILE")
+	setString(&cfg.State.SubscriptionsFile, "STATE_SUBSCRIPTIONS_FILE")
 }
 
 func (c Config) Validate() error {

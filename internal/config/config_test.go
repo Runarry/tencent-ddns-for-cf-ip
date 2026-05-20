@@ -131,6 +131,44 @@ api:
 	}
 }
 
+func TestSubscriptionsStateFileDefaultAndEnvOverride(t *testing.T) {
+	cfg := validConfig()
+	if cfg.State.SubscriptionsFile != "" {
+		t.Fatalf("validConfig should not set subscriptions file: %#v", cfg.State)
+	}
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	data := []byte(`
+provider:
+  source: web
+  nodeids: ["ctcc"]
+dnspod:
+  secret_id: id
+  secret_key: key
+  domain: example.com
+sync:
+  managed_prefix: cf
+  default_nodeid: ctcc
+  max_records_per_node: 1
+  ping_threshold_ms: 1
+  ping_concurrency: 1
+  ping_packets: 1
+api:
+  bearer_token: secret
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SUBSCRIPTIONS_STATE_FILE", "/tmp/runtime-subscriptions.json")
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.State.SubscriptionsFile != "/tmp/runtime-subscriptions.json" {
+		t.Fatalf("subscriptions_file = %q", loaded.State.SubscriptionsFile)
+	}
+}
+
 func TestRedactedHidesSubscriptionSecrets(t *testing.T) {
 	cfg := Config{
 		Subscriptions: []SubscriptionConfig{

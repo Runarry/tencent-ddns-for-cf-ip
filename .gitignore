@@ -4,4 +4,4 @@ data/
 config.yaml
 *.exe
 *.test
-
+admin/.wrangler/

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/ping"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/provider"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/state"
+	subscriptions "github.com/sleep/tencent-ddns-for-cf-ip/internal/subscriptions"
 	syncsvc "github.com/sleep/tencent-ddns-for-cf-ip/internal/sync"
 )
 
@@ -278,6 +280,119 @@ func TestPublicSubscriptionEndpointQueryNodeIDsCanFilterUnrestrictedSubscription
 	}
 	if strings.Contains(body, "@cf-ctcc-01.cdn.example.com:443") {
 		t.Fatalf("unrequested target leaked: %s", body)
+	}
+}
+
+func TestAdminSubscriptionsCRUDAndPublicEndpointUseWritableSubscriptions(t *testing.T) {
+	manager, err := subscriptions.NewManager(nil, subscriptions.NewStore(filepath.Join(t.TempDir(), "subscriptions.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := state.State{
+		Records: []state.Record{{Name: "cf-ctcc-01.cdn", FQDN: "cf-ctcc-01.cdn.example.com", NodeID: "ctcc", LatencyMS: 20}},
+	}
+	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, nil, fakeDNS{}, fakeStore{}, initial, slog.Default())
+	handler := NewServer(Config{Token: "secret", SubscriptionManager: manager}, service, config.Config{})
+
+	body := strings.NewReader(`{"name":"main","enabled":true,"format":"base64","nodeids":["ctcc"],"shares":["vless://uuid@old.example.com:443#name"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/subscriptions", body)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "admin.example.com")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var created struct {
+		Item subscriptions.ListItem `json:"item"`
+		Key  string                 `json:"key"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Key == "" || created.Item.PublicToken == "" || created.Item.URLTemplate != "https://admin.example.com/sub/"+created.Item.PublicToken+"?key=<key>" {
+		t.Fatalf("unexpected create response: %#v", created)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/subscriptions", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), created.Key) {
+		t.Fatalf("list leaked subscription key: %s", rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/sub/"+created.Item.PublicToken+"?key="+created.Key, nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("subscription code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	decoded, err := base64.StdEncoding.DecodeString(rr.Body.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(decoded), "@cf-ctcc-01.cdn.example.com:443") {
+		t.Fatalf("writable subscription did not use preferred fqdn: %s", decoded)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/subscriptions/"+created.Item.ID, nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("delete code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAdminRotateSecretReturnsNewKeyOnce(t *testing.T) {
+	manager, err := subscriptions.NewManager(nil, subscriptions.NewStore(filepath.Join(t.TempDir(), "subscriptions.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := manager.Create(subscriptions.UpsertRequest{
+		Name:    "main",
+		Enabled: true,
+		Format:  "base64",
+		Shares:  []string{"vless://uuid@old.example.com:443#name"},
+	}, "http://example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, nil, fakeDNS{}, fakeStore{}, state.Empty(), slog.Default())
+	handler := NewServer(Config{Token: "secret", SubscriptionManager: manager}, service, config.Config{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/subscriptions/"+created.Item.ID+"/rotate-secret", strings.NewReader(`{"target":"key"}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("rotate code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var rotated struct {
+		Item subscriptions.ListItem `json:"item"`
+		Key  string                 `json:"key"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&rotated); err != nil {
+		t.Fatal(err)
+	}
+	if rotated.Key == "" || rotated.Key == created.Key {
+		t.Fatalf("unexpected rotate response: %#v", rotated)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/subscriptions", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), rotated.Key) {
+		t.Fatalf("list leaked rotated key: %s", rr.Body.String())
 	}
 }
 
