@@ -1,8 +1,15 @@
+const defaultSpeedPresets = [
+  { name: "Cloudflare 1MB", url: "https://speed.cloudflare.com/__down?bytes=1048576" },
+  { name: "Cloudflare 10MB", url: "https://speed.cloudflare.com/__down?bytes=10485760" },
+  { name: "Cloudflare 50MB", url: "https://speed.cloudflare.com/__down?bytes=52428800" },
+  { name: "Cloudflare 100MB", url: "https://speed.cloudflare.com/__down?bytes=104857600" },
+];
+
 const state = {
   status: null,
   records: [],
   subscriptions: [],
-  speedPresets: [],
+  speedPresets: defaultSpeedPresets,
   temporarySpeedTest: null,
   activeTab: "overview",
 };
@@ -107,12 +114,12 @@ async function refreshAll() {
       api("/api/v1/status"),
       api("/api/v1/records"),
       api("/api/v1/admin/subscriptions"),
-      api("/api/v1/admin/speed-test-presets"),
+      api("/api/v1/admin/speed-test-presets").catch(() => ({ presets: defaultSpeedPresets })),
     ]);
     state.status = status;
     state.records = records.records || [];
     state.subscriptions = subscriptions.subscriptions || [];
-    state.speedPresets = speedPresets.presets || [];
+    state.speedPresets = speedPresets.presets?.length ? speedPresets.presets : defaultSpeedPresets;
     render();
   } catch (error) {
     notify(error.message);
@@ -229,7 +236,7 @@ function renderSpeed() {
 
 function renderSpeedPresets() {
   const select = $("speedPresetSelect");
-  if (select.dataset.loaded === "true" || state.speedPresets.length === 0) {
+  if (select.dataset.loaded === "true" && select.options.length > 0) {
     return;
   }
   select.innerHTML = state.speedPresets
