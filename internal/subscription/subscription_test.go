@@ -158,6 +158,130 @@ func TestGenerateUsesPreferredFQDNsAndBase64Subscription(t *testing.T) {
 	}
 }
 
+func TestGenerateEnhancesURLFragmentsWithNetworkSummary(t *testing.T) {
+	records := []state.Record{
+		{Name: "cf-bgp-01.cdn", FQDN: "cf-bgp-01.cdn.example.com", NodeID: "bgp", LatencyMS: 90, UpdatedAt: time.Now()},
+		{Name: "cf-ctcc-01.cdn", FQDN: "cf-ctcc-01.cdn.example.com", NodeID: "ctcc", LatencyMS: 40, SpeedBPS: 12897485, UpdatedAt: time.Now()},
+	}
+	out, err := Generate(Config{
+		Format: "base64",
+		Shares: []string{"vless://uuid@old.example.com:443?security=tls&sni=sni.example.com#name"},
+	}, records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(decoded)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("line count = %d: %q", len(lines), decoded)
+	}
+
+	fragments := map[string]string{}
+	for _, line := range lines {
+		parsed, err := url.Parse(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fragments[parsed.Hostname()] = parsed.Fragment
+	}
+	if fragments["cf-ctcc-01.cdn.example.com"] != "name [ctcc cf-ctcc-01 ping 40ms 12.3MB/s]" {
+		t.Fatalf("ctcc fragment was not enhanced: %#v", fragments)
+	}
+	if fragments["cf-bgp-01.cdn.example.com"] != "name [bgp cf-bgp-01 ping 90ms]" {
+		t.Fatalf("bgp fragment was not enhanced: %#v", fragments)
+	}
+}
+
+func TestGenerateEnhancesVMessPSWithNetworkSummary(t *testing.T) {
+	obj := map[string]any{
+		"v":    "2",
+		"ps":   "node",
+		"add":  "old.example.com",
+		"port": "443",
+		"id":   "uuid",
+	}
+	raw, _ := json.Marshal(obj)
+	link := "vmess://" + base64.StdEncoding.EncodeToString(raw)
+
+	out, err := Generate(Config{
+		Format: "base64",
+		Shares: []string{link},
+	}, []state.Record{
+		{Name: "cf-ctcc-01.cdn", FQDN: "cf-ctcc-01.cdn.example.com", NodeID: "ctcc", LatencyMS: 40, UpdatedAt: time.Now()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := strings.TrimSpace(string(decoded))
+	payload := strings.TrimPrefix(line, "vmess://")
+	decodedPayload, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(decodedPayload, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["add"] != "cf-ctcc-01.cdn.example.com" {
+		t.Fatalf("add was not replaced: %#v", got)
+	}
+	if got["ps"] != "node [ctcc cf-ctcc-01 ping 40ms]" {
+		t.Fatalf("ps was not enhanced: %#v", got)
+	}
+}
+
+func TestGenerateEnhancesShadowsocksNamesWithNetworkSummary(t *testing.T) {
+	out, err := Generate(Config{
+		Format: "base64",
+		Shares: []string{
+			"ss://" + base64.StdEncoding.EncodeToString([]byte("aes-128-gcm:pass")) + "@old.example.com:8388?plugin=v2ray-plugin#ss",
+			"ss://" + base64.StdEncoding.EncodeToString([]byte("aes-128-gcm:pass@old.example.com:8388")) + "#legacy",
+		},
+	}, []state.Record{
+		{Name: "cf-ctcc-01.cdn", FQDN: "cf-ctcc-01.cdn.example.com", NodeID: "ctcc", LatencyMS: 40, UpdatedAt: time.Now()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(decoded)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("line count = %d: %q", len(lines), decoded)
+	}
+
+	sip002, err := url.Parse(lines[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sip002.Hostname() != "cf-ctcc-01.cdn.example.com" || sip002.Fragment != "ss [ctcc cf-ctcc-01 ping 40ms]" {
+		t.Fatalf("sip002 name was not enhanced: %s", lines[0])
+	}
+
+	legacyPayload := strings.TrimPrefix(lines[1], "ss://")
+	legacyEncoded, legacyFragment, _ := strings.Cut(legacyPayload, "#")
+	legacyDecoded, err := base64.StdEncoding.DecodeString(legacyEncoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyName, err := url.PathUnescape(legacyFragment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(legacyDecoded) != "aes-128-gcm:pass@cf-ctcc-01.cdn.example.com:8388" || legacyName != "legacy [ctcc cf-ctcc-01 ping 40ms]" {
+		t.Fatalf("legacy name was not enhanced: %s %s", legacyDecoded, legacyName)
+	}
+}
+
 func TestGenerateFiltersTargetsByNodeID(t *testing.T) {
 	records := []state.Record{
 		{Name: "cf-bgp-01.cdn", FQDN: "cf-bgp-01.cdn.example.com", NodeID: "bgp", LatencyMS: 10, UpdatedAt: time.Now()},

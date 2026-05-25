@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"sort"
@@ -24,8 +25,16 @@ type Config struct {
 	NodeIDs []string
 }
 
+type subscriptionTarget struct {
+	FQDN       string
+	NodeID     string
+	RecordName string
+	LatencyMS  int64
+	SpeedBPS   int64
+}
+
 func Generate(cfg Config, records []state.Record) (string, error) {
-	targets := PreferredTargets(records, cfg.NodeIDs)
+	targets := preferredTargets(records, cfg.NodeIDs)
 	if len(targets) == 0 {
 		return "", ErrNoTargets
 	}
@@ -37,7 +46,7 @@ func Generate(cfg Config, records []state.Record) (string, error) {
 			continue
 		}
 		for _, target := range targets {
-			rewritten, err := RewriteShare(share, target)
+			rewritten, err := rewriteShareForTarget(share, target)
 			if err != nil {
 				continue
 			}
@@ -53,6 +62,15 @@ func Generate(cfg Config, records []state.Record) (string, error) {
 }
 
 func PreferredTargets(records []state.Record, nodeIDs []string) []string {
+	targets := preferredTargets(records, nodeIDs)
+	fqdns := make([]string, 0, len(targets))
+	for _, target := range targets {
+		fqdns = append(fqdns, target.FQDN)
+	}
+	return fqdns
+}
+
+func preferredTargets(records []state.Record, nodeIDs []string) []subscriptionTarget {
 	allowed := allowedNodeIDs(nodeIDs)
 	candidates := make([]state.Record, 0, len(records))
 	for _, record := range records {
@@ -78,7 +96,7 @@ func PreferredTargets(records []state.Record, nodeIDs []string) []string {
 		return candidates[i].FQDN < candidates[j].FQDN
 	})
 
-	targets := make([]string, 0, len(candidates))
+	targets := make([]subscriptionTarget, 0, len(candidates))
 	seen := map[string]struct{}{}
 	for _, candidate := range candidates {
 		key := strings.ToLower(candidate.FQDN)
@@ -86,7 +104,13 @@ func PreferredTargets(records []state.Record, nodeIDs []string) []string {
 			continue
 		}
 		seen[key] = struct{}{}
-		targets = append(targets, candidate.FQDN)
+		targets = append(targets, subscriptionTarget{
+			FQDN:       candidate.FQDN,
+			NodeID:     candidate.NodeID,
+			RecordName: candidate.Name,
+			LatencyMS:  candidate.LatencyMS,
+			SpeedBPS:   candidate.SpeedBPS,
+		})
 	}
 	return targets
 }
@@ -105,6 +129,14 @@ func allowedNodeIDs(nodeIDs []string) map[string]struct{} {
 }
 
 func RewriteShare(share string, target string) (string, error) {
+	return rewriteShare(share, target, nil)
+}
+
+func rewriteShareForTarget(share string, target subscriptionTarget) (string, error) {
+	return rewriteShare(share, target.FQDN, &target)
+}
+
+func rewriteShare(share string, target string, nameTarget *subscriptionTarget) (string, error) {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return "", ErrNoTargets
@@ -117,17 +149,17 @@ func RewriteShare(share string, target string) (string, error) {
 	}
 	switch strings.ToLower(scheme) {
 	case "vmess":
-		return rewriteVMess(rest, target)
+		return rewriteVMess(rest, target, nameTarget)
 	case "vless", "trojan", "hysteria", "hysteria2":
-		return rewriteURLShare(share, target)
+		return rewriteURLShare(share, target, nameTarget)
 	case "ss":
-		return rewriteShadowsocks(share, target)
+		return rewriteShadowsocks(share, target, nameTarget)
 	default:
 		return "", ErrUnsupported
 	}
 }
 
-func rewriteVMess(payload string, target string) (string, error) {
+func rewriteVMess(payload string, target string, nameTarget *subscriptionTarget) (string, error) {
 	decoded, err := decodeBase64Flexible(payload)
 	if err != nil {
 		return "", err
@@ -137,6 +169,10 @@ func rewriteVMess(payload string, target string) (string, error) {
 		return "", err
 	}
 	obj["add"] = target
+	if nameTarget != nil {
+		baseName, _ := obj["ps"].(string)
+		obj["ps"] = displayName(baseName, *nameTarget)
+	}
 
 	encoded, err := json.Marshal(obj)
 	if err != nil {
@@ -145,7 +181,7 @@ func rewriteVMess(payload string, target string) (string, error) {
 	return "vmess://" + base64.StdEncoding.EncodeToString(encoded), nil
 }
 
-func rewriteURLShare(share string, target string) (string, error) {
+func rewriteURLShare(share string, target string, nameTarget *subscriptionTarget) (string, error) {
 	parsed, err := url.Parse(share)
 	if err != nil {
 		return "", err
@@ -154,19 +190,25 @@ func rewriteURLShare(share string, target string) (string, error) {
 		return "", ErrUnsupported
 	}
 	replaceHost(parsed, target)
+	if nameTarget != nil {
+		parsed.Fragment = displayName(parsed.Fragment, *nameTarget)
+	}
 	return parsed.String(), nil
 }
 
-func rewriteShadowsocks(share string, target string) (string, error) {
+func rewriteShadowsocks(share string, target string, nameTarget *subscriptionTarget) (string, error) {
 	parsed, err := url.Parse(share)
 	if err == nil && parsed.Host != "" && parsed.User != nil {
 		replaceHost(parsed, target)
+		if nameTarget != nil {
+			parsed.Fragment = displayName(parsed.Fragment, *nameTarget)
+		}
 		return parsed.String(), nil
 	}
-	return rewriteLegacyShadowsocks(share, target)
+	return rewriteLegacyShadowsocks(share, target, nameTarget)
 }
 
-func rewriteLegacyShadowsocks(share string, target string) (string, error) {
+func rewriteLegacyShadowsocks(share string, target string, nameTarget *subscriptionTarget) (string, error) {
 	payload := strings.TrimPrefix(share, "ss://")
 	encoded, fragment, _ := strings.Cut(payload, "#")
 	decoded, err := decodeBase64Flexible(encoded)
@@ -186,9 +228,65 @@ func rewriteLegacyShadowsocks(share string, target string) (string, error) {
 	rebuilt := strings.TrimPrefix(parsed.String(), "ss://")
 	result := "ss://" + base64.StdEncoding.EncodeToString([]byte(rebuilt))
 	if fragment != "" {
-		result += "#" + fragment
+		if nameTarget == nil {
+			result += "#" + fragment
+		} else {
+			baseName := fragment
+			if unescaped, err := url.PathUnescape(fragment); err == nil {
+				baseName = unescaped
+			}
+			result += "#" + url.PathEscape(displayName(baseName, *nameTarget))
+		}
+	} else if nameTarget != nil {
+		result += "#" + url.PathEscape(displayName("", *nameTarget))
 	}
 	return result, nil
+}
+
+func displayName(baseName string, target subscriptionTarget) string {
+	baseName = strings.TrimSpace(baseName)
+	if baseName == "" {
+		baseName = target.FQDN
+	}
+
+	parts := make([]string, 0, 4)
+	if nodeID := strings.TrimSpace(target.NodeID); nodeID != "" {
+		parts = append(parts, nodeID)
+	}
+	if host := targetHostLabel(target); host != "" {
+		parts = append(parts, host)
+	}
+	if target.LatencyMS > 0 {
+		parts = append(parts, fmt.Sprintf("ping %dms", target.LatencyMS))
+	}
+	if speed := formatSpeed(target.SpeedBPS); speed != "" {
+		parts = append(parts, speed)
+	}
+	if len(parts) == 0 {
+		return baseName
+	}
+	return baseName + " [" + strings.Join(parts, " ") + "]"
+}
+
+func targetHostLabel(target subscriptionTarget) string {
+	fqdn := strings.Trim(strings.TrimSpace(target.FQDN), ".")
+	if fqdn == "" {
+		fqdn = strings.Trim(strings.TrimSpace(target.RecordName), ".")
+	}
+	host, _, _ := strings.Cut(fqdn, ".")
+	return host
+}
+
+func formatSpeed(bytesPerSecond int64) string {
+	if bytesPerSecond <= 0 {
+		return ""
+	}
+	const kib = 1024
+	const mib = kib * 1024
+	if bytesPerSecond >= mib {
+		return fmt.Sprintf("%.1fMB/s", float64(bytesPerSecond)/mib)
+	}
+	return fmt.Sprintf("%.1fKB/s", float64(bytesPerSecond)/kib)
 }
 
 func replaceHost(parsed *url.URL, target string) {

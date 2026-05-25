@@ -121,7 +121,7 @@ curl "http://localhost:8080/sub/replace-with-a-long-random-subscription-token?ke
 curl "http://localhost:8080/sub/replace-with-a-long-random-subscription-token?key=replace-with-a-long-random-subscription-key&nodeids=ctcc"
 ```
 
-订阅内容会把分享链接的实际连接地址替换为当前优选 FQDN，例如 `cf-ctcc-01.cdn.q.example.com`；`sni`、`host`、`path` 等传输参数保持原值。配置了 `nodeids` 时，只会使用匹配线路的优选 FQDN；请求里的 `nodeids` 只能在配置允许范围内继续收窄。
+订阅内容会把分享链接的实际连接地址替换为当前优选 FQDN，例如 `cf-ctcc-01.cdn.q.example.com`；`sni`、`host`、`path` 等传输参数保持原值。生成的节点显示名会保留原名称，并追加线路、节点主机、ping 和可用测速概要，例如 `HongKong [ctcc cf-ctcc-01 ping 40ms 12.3MB/s]`。配置了 `nodeids` 时，只会使用匹配线路的优选 FQDN；请求里的 `nodeids` 只能在配置允许范围内继续收窄。
 
 ## Cloudflare 管理工具
 
