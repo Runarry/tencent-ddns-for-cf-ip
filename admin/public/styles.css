@@ -46,6 +46,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -278,6 +279,17 @@ h3 {
   background: var(--surface);
 }
 
+.form-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) minmax(280px, 1fr);
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.speed-history-head {
+  margin-top: 24px;
+}
+
 table {
   width: 100%;
   min-width: 760px;
@@ -310,6 +322,7 @@ label {
 }
 
 input,
+select,
 textarea {
   width: 100%;
   border: 1px solid var(--line);
@@ -415,6 +428,10 @@ dialog::backdrop {
   .section-head {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr;
   }
 
   .metrics {

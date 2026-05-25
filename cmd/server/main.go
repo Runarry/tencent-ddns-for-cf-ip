@@ -98,6 +98,9 @@ func main() {
 		SpeedTest: syncsvc.SpeedTestConfig{
 			Enabled:           cfg.Sync.SpeedTest.Enabled,
 			CandidatesPerNode: cfg.Sync.SpeedTest.CandidatesPerNode,
+			DownloadBytes:     cfg.Sync.SpeedTest.DownloadBytes,
+			Timeout:           cfg.Sync.SpeedTest.Timeout.Duration,
+			Concurrency:       cfg.Sync.SpeedTest.Concurrency,
 		},
 		Fallback: syncsvc.FallbackConfig{
 			Enabled:           cfg.Sync.Fallback.Enabled,

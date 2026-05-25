@@ -28,6 +28,22 @@ type Server struct {
 	staticSubscriptions []config.SubscriptionConfig
 }
 
+type speedTestPreset struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+type temporarySpeedTestRequest struct {
+	URL string `json:"url"`
+}
+
+var speedTestPresets = []speedTestPreset{
+	{Name: "Cloudflare 1MB", URL: "https://speed.cloudflare.com/__down?bytes=1048576"},
+	{Name: "Cloudflare 10MB", URL: "https://speed.cloudflare.com/__down?bytes=10485760"},
+	{Name: "Cloudflare 50MB", URL: "https://speed.cloudflare.com/__down?bytes=52428800"},
+	{Name: "Cloudflare 100MB", URL: "https://speed.cloudflare.com/__down?bytes=104857600"},
+}
+
 func NewServer(cfg Config, service *syncsvc.Service, redacted config.Config) http.Handler {
 	s := &Server{
 		cfg:                 cfg,
@@ -47,6 +63,9 @@ func NewServer(cfg Config, service *syncsvc.Service, redacted config.Config) htt
 	mux.HandleFunc("PUT /api/v1/admin/subscriptions/{id}", s.withAuth(s.adminUpdateSubscription))
 	mux.HandleFunc("DELETE /api/v1/admin/subscriptions/{id}", s.withAuth(s.adminDeleteSubscription))
 	mux.HandleFunc("POST /api/v1/admin/subscriptions/{id}/rotate-secret", s.withAuth(s.adminRotateSubscriptionSecret))
+	mux.HandleFunc("GET /api/v1/admin/speed-test-presets", s.withAuth(s.adminSpeedTestPresets))
+	mux.HandleFunc("POST /api/v1/admin/speed-tests", s.withAuth(s.adminRunTemporarySpeedTest))
+	mux.HandleFunc("POST /api/v1/admin/speed-tests/{id}/apply", s.withAuth(s.adminApplyTemporarySpeedTest))
 	mux.HandleFunc("GET /sub/{token}", s.subscription)
 	return mux
 }
@@ -189,6 +208,32 @@ func (s *Server) adminRotateSubscriptionSecret(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) adminSpeedTestPresets(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"presets": speedTestPresets})
+}
+
+func (s *Server) adminRunTemporarySpeedTest(w http.ResponseWriter, r *http.Request) {
+	var req temporarySpeedTestRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	result, err := s.service.RunTemporarySpeedTest(r.Context(), req.URL)
+	if err != nil {
+		writeTemporarySpeedTestError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) adminApplyTemporarySpeedTest(w http.ResponseWriter, r *http.Request) {
+	result, err := s.service.ApplyTemporarySpeedTest(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeTemporarySpeedTestError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) requireSubscriptionManager(w http.ResponseWriter) (*subscriptions.Manager, bool) {
 	if s.subscriptionManager == nil {
 		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "subscription manager is not configured"})
@@ -238,6 +283,19 @@ func writeSubscriptionError(w http.ResponseWriter, err error) {
 	case errors.Is(err, subscriptions.ErrNotEditable):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, subscriptions.ErrInvalidInput):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	default:
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+}
+
+func writeTemporarySpeedTestError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, syncsvc.ErrUpdateInProgress):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, syncsvc.ErrTemporarySpeedTestGone):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, syncsvc.ErrTemporarySpeedTestURL), errors.Is(err, syncsvc.ErrTemporarySpeedTestEmpty):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	default:
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

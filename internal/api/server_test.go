@@ -79,6 +79,31 @@ func TestConfigEndpointIncludesSpeedTestConfig(t *testing.T) {
 	}
 }
 
+func TestAdminSpeedTestPresets(t *testing.T) {
+	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, nil, fakeDNS{}, fakeStore{}, state.Empty(), slog.Default())
+	handler := NewServer(Config{Token: "secret"}, service, config.Config{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/speed-test-presets", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got struct {
+		Presets []struct {
+			Name string `json:"name"`
+			URL  string `json:"url"`
+		} `json:"presets"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Presets) != 4 || got.Presets[1].Name != "Cloudflare 10MB" || got.Presets[1].URL != "https://speed.cloudflare.com/__down?bytes=10485760" {
+		t.Fatalf("unexpected presets: %#v", got.Presets)
+	}
+}
+
 func TestPublicSubscriptionEndpoint(t *testing.T) {
 	initial := state.State{
 		Records: []state.Record{

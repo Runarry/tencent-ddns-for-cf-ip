@@ -2,6 +2,7 @@ package syncsvc
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
@@ -165,6 +166,105 @@ func TestSpeedTestPartialFailuresUseSuccessfulResultsOnly(t *testing.T) {
 	}
 }
 
+func TestTemporarySpeedTestUsesURLAndDoesNotMutateState(t *testing.T) {
+	var gotURL string
+	initial := state.State{
+		Records: []state.Record{
+			{Name: "cf-ctcc-01", FQDN: "cf-ctcc-01.example.com", Type: "A", Value: "172.64.1.1", NodeID: "ctcc", LatencyMS: 20},
+			{Name: "fallback", FQDN: "*.example.com", Type: "CNAME", Value: "example.com", NodeID: "fallback"},
+		},
+	}
+	store := &memoryStore{state: initial}
+	service := NewService(Config{
+		SpeedTest: SpeedTestConfig{
+			NewTester: func(url string) SpeedTester {
+				gotURL = url
+				return staticSpeedTester{
+					{Candidate: provider.Candidate{NodeID: "ctcc", IP: "172.64.1.1"}, SpeedBPS: 2048, DownloadBytes: 1024, DownloadDuration: 50 * time.Millisecond, TTFB: 5 * time.Millisecond, Success: true},
+				}
+			},
+		},
+	}, providerStub{}, pingerStub{}, nil, &memoryDNS{}, store, initial, slog.Default())
+
+	result, err := service.RunTemporarySpeedTest(context.Background(), "https://speed.cloudflare.com/__down?bytes=10485760")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotURL != "https://speed.cloudflare.com/__down?bytes=10485760" {
+		t.Fatalf("url = %q", gotURL)
+	}
+	if result.ID == "" || len(result.Results) != 1 || result.Results[0].SpeedBPS != 2048 {
+		t.Fatalf("unexpected temporary result: %#v", result)
+	}
+	if got := service.Records()[0]; got.SpeedBPS != 0 || got.DownloadBytes != 0 {
+		t.Fatalf("temporary test mutated service state: %#v", got)
+	}
+	if got := store.state.Records[0]; got.SpeedBPS != 0 || got.DownloadBytes != 0 {
+		t.Fatalf("temporary test saved state: %#v", got)
+	}
+}
+
+func TestApplyTemporarySpeedTestUpdatesRecordSlotsAndDNS(t *testing.T) {
+	initial := state.State{
+		Records: []state.Record{
+			{RecordID: 12, Name: "cdn", FQDN: "cdn.example.com", Type: "A", Value: "172.64.1.1", NodeID: "ctcc", LatencyMS: 20},
+			{RecordID: 10, Name: "cf-ctcc-01.cdn", FQDN: "cf-ctcc-01.cdn.example.com", Type: "A", Value: "172.64.1.1", NodeID: "ctcc", LatencyMS: 20},
+			{RecordID: 11, Name: "cf-ctcc-02.cdn", FQDN: "cf-ctcc-02.cdn.example.com", Type: "A", Value: "172.64.1.2", NodeID: "ctcc", LatencyMS: 30},
+		},
+	}
+	dns := &memoryDNS{
+		records: []dnspod.Record{
+			{ID: 12, Name: "cdn", Type: "A", Value: "172.64.1.1"},
+			{ID: 10, Name: "cf-ctcc-01.cdn", Type: "A", Value: "172.64.1.1"},
+			{ID: 11, Name: "cf-ctcc-02.cdn", Type: "A", Value: "172.64.1.2"},
+		},
+		nextID: 100,
+	}
+	store := &memoryStore{state: initial}
+	service := NewService(Config{
+		ManagedPrefix:        "cf",
+		ManagedBaseSubdomain: "cdn",
+		DefaultNodeID:        "ctcc",
+		MaxRecordsPerNode:    2,
+		Domain:               "example.com",
+		SpeedTest: SpeedTestConfig{
+			NewTester: func(string) SpeedTester {
+				return staticSpeedTester{
+					{Candidate: provider.Candidate{NodeID: "ctcc", IP: "172.64.1.1"}, SpeedBPS: 100, DownloadBytes: 1024, DownloadDuration: 20 * time.Millisecond, TTFB: 6 * time.Millisecond, Success: true},
+					{Candidate: provider.Candidate{NodeID: "ctcc", IP: "172.64.1.2"}, SpeedBPS: 1000, DownloadBytes: 1024, DownloadDuration: 10 * time.Millisecond, TTFB: 5 * time.Millisecond, Success: true},
+				}
+			},
+		},
+	}, providerStub{}, pingerStub{}, nil, dns, store, initial, slog.Default())
+
+	result, err := service.RunTemporarySpeedTest(context.Background(), "https://speed.cloudflare.com/__down?bytes=10485760")
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied, err := service.ApplyTemporarySpeedTest(context.Background(), result.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied.Applied || len(applied.Records) != 3 {
+		t.Fatalf("unexpected apply result: %#v", applied)
+	}
+	if got := recordByName(store.state.Records, "cf-ctcc-01.cdn"); got.Value != "172.64.1.2" || got.SpeedBPS != 1000 || got.DownloadMS != 10 || got.TTFBMS != 5 {
+		t.Fatalf("fastest record was not moved into first slot: %#v", got)
+	}
+	if got := recordByName(store.state.Records, "cf-ctcc-02.cdn"); got.Value != "172.64.1.1" || got.SpeedBPS != 100 {
+		t.Fatalf("second record was not moved into second slot: %#v", got)
+	}
+	if got := recordByName(store.state.Records, "cdn"); got.Value != "172.64.1.2" || got.SpeedBPS != 1000 {
+		t.Fatalf("default record did not follow fastest default node: %#v", got)
+	}
+	if dnsRecordByName(dns.records, "cf-ctcc-01.cdn").Value != "172.64.1.2" || dnsRecordByName(dns.records, "cf-ctcc-02.cdn").Value != "172.64.1.1" || dnsRecordByName(dns.records, "cdn").Value != "172.64.1.2" {
+		t.Fatalf("dns records were not updated: %#v", dns.records)
+	}
+	if _, err := service.ApplyTemporarySpeedTest(context.Background(), result.ID); !errors.Is(err, ErrTemporarySpeedTestGone) {
+		t.Fatalf("second apply error = %v", err)
+	}
+}
+
 func TestDesiredRecordsIncludesBaseDefaultAndWildcardFallback(t *testing.T) {
 	now := time.Now().UTC()
 	selected := map[string][]selectedResult{
@@ -228,6 +328,24 @@ type staticSpeedTester []speedtest.Result
 
 func (s staticSpeedTester) Check(context.Context, []provider.Candidate) []speedtest.Result {
 	return append([]speedtest.Result(nil), s...)
+}
+
+func recordByName(records []state.Record, name string) state.Record {
+	for _, record := range records {
+		if record.Name == name {
+			return record
+		}
+	}
+	return state.Record{}
+}
+
+func dnsRecordByName(records []dnspod.Record, name string) dnspod.Record {
+	for _, record := range records {
+		if record.Name == name {
+			return record
+		}
+	}
+	return dnspod.Record{}
 }
 
 type memoryDNS struct {

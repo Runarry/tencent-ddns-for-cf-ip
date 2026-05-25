@@ -86,6 +86,43 @@
           </section>
 
           <section id="speedPanel" class="panel">
+            <div class="section-head">
+              <h3>临时测速</h3>
+              <div class="actions">
+                <button id="runSpeedTestButton" class="primary" type="button">开始测速</button>
+                <button id="applySpeedTestButton" class="secondary" type="button" hidden>应用结果</button>
+              </div>
+            </div>
+            <div class="form-grid">
+              <label>
+                <span>内置地址</span>
+                <select id="speedPresetSelect"></select>
+              </label>
+              <label>
+                <span>测速下载 URL</span>
+                <input id="speedTestUrl" type="url" placeholder="https://speed.cloudflare.com/__down?bytes=10485760" />
+              </label>
+            </div>
+            <p id="speedTestStatus" class="secret"></p>
+            <div id="temporarySpeedWrap" class="table-wrap" hidden>
+              <table>
+                <thead>
+                  <tr>
+                    <th>线路</th>
+                    <th>FQDN</th>
+                    <th>IP</th>
+                    <th>速度</th>
+                    <th>TTFB</th>
+                    <th>下载</th>
+                    <th>状态</th>
+                  </tr>
+                </thead>
+                <tbody id="temporarySpeedTable"></tbody>
+              </table>
+            </div>
+            <div class="section-head speed-history-head">
+              <h3>当前测速结果</h3>
+            </div>
             <div class="table-wrap">
               <table>
                 <thead>

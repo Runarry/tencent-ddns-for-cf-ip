@@ -2,6 +2,8 @@ const state = {
   status: null,
   records: [],
   subscriptions: [],
+  speedPresets: [],
+  temporarySpeedTest: null,
   activeTab: "overview",
 };
 
@@ -74,6 +76,14 @@ function bindEvents() {
   $("saveSubscriptionButton").addEventListener("click", saveSubscription);
   $("deleteSubscriptionButton").addEventListener("click", deleteSubscription);
   $("rotateKeyButton").addEventListener("click", rotateKey);
+  $("runSpeedTestButton").addEventListener("click", runTemporarySpeedTest);
+  $("applySpeedTestButton").addEventListener("click", () => applyTemporarySpeedTest());
+  $("speedPresetSelect").addEventListener("change", () => {
+    const url = $("speedPresetSelect").value;
+    if (url) {
+      $("speedTestUrl").value = url;
+    }
+  });
 
   document.querySelectorAll(".tab").forEach((button) => {
     button.addEventListener("click", () => setTab(button.dataset.tab));
@@ -93,14 +103,16 @@ function showAdmin() {
 async function refreshAll() {
   setBusy(true);
   try {
-    const [status, records, subscriptions] = await Promise.all([
+    const [status, records, subscriptions, speedPresets] = await Promise.all([
       api("/api/v1/status"),
       api("/api/v1/records"),
       api("/api/v1/admin/subscriptions"),
+      api("/api/v1/admin/speed-test-presets"),
     ]);
     state.status = status;
     state.records = records.records || [];
     state.subscriptions = subscriptions.subscriptions || [];
+    state.speedPresets = speedPresets.presets || [];
     render();
   } catch (error) {
     notify(error.message);
@@ -135,6 +147,8 @@ function render() {
   renderRecentRecords();
   renderSubscriptions();
   renderRecords();
+  renderSpeedPresets();
+  renderTemporarySpeed();
   renderSpeed();
 }
 
@@ -211,6 +225,47 @@ function renderSpeed() {
         </tr>
       `)
       .join("") || `<tr><td colspan="6">暂无测速结果</td></tr>`;
+}
+
+function renderSpeedPresets() {
+  const select = $("speedPresetSelect");
+  if (select.dataset.loaded === "true" || state.speedPresets.length === 0) {
+    return;
+  }
+  select.innerHTML = state.speedPresets
+    .map((preset) => `<option value="${escapeAttr(preset.url)}">${escapeHTML(preset.name)}</option>`)
+    .join("");
+  const defaultPreset = state.speedPresets.find((preset) => preset.name.includes("10MB")) || state.speedPresets[0];
+  if (defaultPreset) {
+    select.value = defaultPreset.url;
+    $("speedTestUrl").value = defaultPreset.url;
+  }
+  select.dataset.loaded = "true";
+}
+
+function renderTemporarySpeed() {
+  const test = state.temporarySpeedTest;
+  $("applySpeedTestButton").hidden = !test;
+  $("temporarySpeedWrap").hidden = !test;
+  if (!test) {
+    $("temporarySpeedTable").innerHTML = "";
+    return;
+  }
+  $("speedTestStatus").textContent = `临时测速完成：${formatDate(test.ended_at)} · ${test.url}`;
+  $("temporarySpeedTable").innerHTML =
+    (test.results || [])
+      .map((result) => `
+        <tr>
+          <td>${escapeHTML(result.nodeid || "-")}</td>
+          <td>${escapeHTML(result.fqdn || result.name || "-")}</td>
+          <td>${escapeHTML(result.ip || "-")}</td>
+          <td>${formatSpeed(result.speed_bps)}</td>
+          <td>${formatLatency(result.ttfb_ms)}</td>
+          <td>${formatBytes(result.download_bytes)}</td>
+          <td>${result.success ? "成功" : escapeHTML(result.error || "失败")}</td>
+        </tr>
+      `)
+      .join("") || `<tr><td colspan="7">暂无临时测速结果</td></tr>`;
 }
 
 function recordItem(record) {
@@ -308,6 +363,56 @@ async function rotateKey() {
     await refreshAll();
   } catch (error) {
     $("dialogSecret").textContent = error.message;
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function runTemporarySpeedTest() {
+  const url = $("speedTestUrl").value.trim();
+  if (!url) {
+    $("speedTestStatus").textContent = "请输入测速下载 URL";
+    return;
+  }
+  setBusy(true);
+  $("speedTestStatus").textContent = "测速运行中";
+  try {
+    const result = await api("/api/v1/admin/speed-tests", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    });
+    state.temporarySpeedTest = result;
+    renderTemporarySpeed();
+    notify("临时测速完成");
+    if (confirm("临时测速完成，是否根据测速结果更新订阅？")) {
+      await applyTemporarySpeedTest(true);
+    }
+  } catch (error) {
+    $("speedTestStatus").textContent = error.message;
+    notify(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function applyTemporarySpeedTest(skipConfirm = false) {
+  const id = state.temporarySpeedTest?.id;
+  if (!id) {
+    return;
+  }
+  if (!skipConfirm && !confirm("根据本次测速结果更新优选记录并影响订阅？")) {
+    return;
+  }
+  setBusy(true);
+  try {
+    await api(`/api/v1/admin/speed-tests/${encodeURIComponent(id)}/apply`, { method: "POST" });
+    state.temporarySpeedTest = null;
+    $("speedTestStatus").textContent = "";
+    notify("已应用测速结果");
+    await refreshAll();
+  } catch (error) {
+    $("speedTestStatus").textContent = error.message;
+    notify(error.message);
   } finally {
     setBusy(false);
   }
