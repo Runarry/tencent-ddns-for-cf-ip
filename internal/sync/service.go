@@ -42,6 +42,7 @@ type Config struct {
 	Interval             time.Duration
 	SpeedTest            SpeedTestConfig
 	Fallback             FallbackConfig
+	Custom               CustomConfig
 }
 
 type SpeedTestConfig struct {
@@ -60,8 +61,17 @@ type FallbackConfig struct {
 	Type              string
 }
 
+type CustomConfig struct {
+	Enabled bool
+	Source  CustomSource
+}
+
 type Provider interface {
 	Fetch(ctx context.Context, nodeIDs []string) (map[string][]provider.Candidate, error)
+}
+
+type CustomSource interface {
+	Fetch(ctx context.Context) ([]provider.Candidate, error)
 }
 
 type Pinger interface {
@@ -440,6 +450,18 @@ func (s *Service) sync(ctx context.Context, now time.Time) ([]state.Record, chan
 	}
 	checked := s.pinger.Check(ctx, all)
 	selected := s.selectByNode(ctx, checked)
+	if s.cfg.Custom.Enabled {
+		if s.cfg.Custom.Source == nil {
+			return nil, changeCounts{}, fmt.Errorf("fetch custom IPs: custom source is not configured")
+		}
+		customCandidates, err := s.cfg.Custom.Source.Fetch(ctx)
+		if err != nil {
+			return nil, changeCounts{}, fmt.Errorf("fetch custom IPs: %w", err)
+		}
+		if customSelected := s.selectCustomByCSV(ctx, customCandidates); len(customSelected) > 0 {
+			selected[provider.CustomNodeID] = customSelected
+		}
+	}
 	desired := desiredRecords(selected, s.cfg, now)
 
 	existing, err := s.dns.ListRecords(ctx)
@@ -683,6 +705,33 @@ func (s *Service) selectByNode(ctx context.Context, results []ping.Result) map[s
 			measured = measured[:s.cfg.MaxRecordsPerNode]
 		}
 		selected[nodeID] = measured
+	}
+	return selected
+}
+
+func (s *Service) selectCustomByCSV(ctx context.Context, candidates []provider.Candidate) []selectedResult {
+	if len(candidates) == 0 {
+		return nil
+	}
+	checked := s.pinger.Check(ctx, candidates)
+	alive := map[string]ping.Result{}
+	for _, result := range checked {
+		if result.Alive {
+			alive[resultKey(result.Candidate)] = result
+		}
+	}
+
+	selected := make([]selectedResult, 0, len(candidates))
+	for _, candidate := range candidates {
+		result, ok := alive[resultKey(candidate)]
+		if !ok {
+			continue
+		}
+		selected = append(selected, selectedResult{
+			Candidate: candidate,
+			Latency:   result.Latency,
+			SpeedBPS:  candidate.SpeedBPS,
+		})
 	}
 	return selected
 }

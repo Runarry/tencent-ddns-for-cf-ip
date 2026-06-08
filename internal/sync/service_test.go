@@ -166,6 +166,101 @@ func TestSpeedTestPartialFailuresUseSuccessfulResultsOnly(t *testing.T) {
 	}
 }
 
+func TestServiceRunSyncsCustomCSVRecords(t *testing.T) {
+	dns := &memoryDNS{nextID: 100}
+	store := &memoryStore{state: state.Empty()}
+	speed := &recordingSpeedTester{
+		results: []speedtest.Result{
+			{Candidate: provider.Candidate{NodeID: "ctcc", IP: "172.64.1.1"}, SpeedBPS: 100, Success: true},
+		},
+	}
+	service := NewService(Config{
+		NodeIDs:              []string{"ctcc"},
+		ManagedPrefix:        "cf",
+		ManagedBaseSubdomain: "cdn",
+		DefaultNodeID:        "missing",
+		MaxRecordsPerNode:    1,
+		Domain:               "example.com",
+		RecordLine:           "默认",
+		TTL:                  600,
+		SpeedTest:            SpeedTestConfig{Enabled: true, CandidatesPerNode: 2},
+		Custom: CustomConfig{
+			Enabled: true,
+			Source: staticCustomSource{
+				{NodeID: provider.CustomNodeID, IP: "1.1.1.1", SpeedBPS: 500},
+				{NodeID: provider.CustomNodeID, IP: "1.1.1.2", SpeedBPS: 400},
+				{NodeID: provider.CustomNodeID, IP: "1.1.1.3", SpeedBPS: 300},
+				{NodeID: provider.CustomNodeID, IP: "1.1.1.4", SpeedBPS: 200},
+				{NodeID: provider.CustomNodeID, IP: "1.1.1.5", SpeedBPS: 100},
+			},
+		},
+	}, providerStub{}, keyedPinger{
+		resultKey(provider.Candidate{NodeID: "ctcc", IP: "172.64.1.1"}):             {Latency: 20 * time.Millisecond, Alive: true},
+		resultKey(provider.Candidate{NodeID: provider.CustomNodeID, IP: "1.1.1.1"}): {Latency: 30 * time.Millisecond, Alive: true},
+		resultKey(provider.Candidate{NodeID: provider.CustomNodeID, IP: "1.1.1.3"}): {Latency: 40 * time.Millisecond, Alive: true},
+	}, speed, dns, store, state.Empty(), slog.Default())
+
+	summary, err := service.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Created != 3 {
+		t.Fatalf("unexpected summary: %#v", summary)
+	}
+	if len(speed.seen) != 1 || speed.seen[0].NodeID != "ctcc" {
+		t.Fatalf("custom candidates were sent to speed test: %#v", speed.seen)
+	}
+	if got := recordByName(store.state.Records, "cf-custom-01.cdn"); got.Value != "1.1.1.1" || got.NodeID != provider.CustomNodeID || got.SpeedBPS != 500 || got.LatencyMS != 30 {
+		t.Fatalf("unexpected first custom record: %#v", got)
+	}
+	if got := recordByName(store.state.Records, "cf-custom-02.cdn"); got.Value != "1.1.1.3" || got.SpeedBPS != 300 || got.LatencyMS != 40 {
+		t.Fatalf("unexpected second custom record: %#v", got)
+	}
+	if countRecordsByNode(store.state.Records, provider.CustomNodeID) != 2 {
+		t.Fatalf("unexpected custom records: %#v", store.state.Records)
+	}
+	if got := recordByName(store.state.Records, "cf-ctcc-01.cdn"); got.Value != "172.64.1.1" {
+		t.Fatalf("public record was not synced: %#v", got)
+	}
+}
+
+func TestServiceRunCustomCSVErrorPreservesCurrentDNSRecords(t *testing.T) {
+	initial := state.State{
+		Records: []state.Record{
+			{Name: "cf-custom-01.cdn", FQDN: "cf-custom-01.cdn.example.com", Type: "A", Value: "1.1.1.1", NodeID: provider.CustomNodeID},
+		},
+	}
+	dns := &memoryDNS{
+		records: []dnspod.Record{{ID: 10, Name: "cf-custom-01.cdn", Type: "A", Value: "1.1.1.1"}},
+		nextID:  100,
+	}
+	store := &memoryStore{state: initial}
+	service := NewService(Config{
+		NodeIDs:              []string{"ctcc"},
+		ManagedPrefix:        "cf",
+		ManagedBaseSubdomain: "cdn",
+		DefaultNodeID:        "missing",
+		MaxRecordsPerNode:    1,
+		Domain:               "example.com",
+		Custom: CustomConfig{
+			Enabled: true,
+			Source:  errorCustomSource{err: errors.New("missing csv")},
+		},
+	}, providerStub{}, keyedPinger{
+		resultKey(provider.Candidate{NodeID: "ctcc", IP: "172.64.1.1"}): {Latency: 20 * time.Millisecond, Alive: true},
+	}, nil, dns, store, initial, slog.Default())
+
+	if _, err := service.Run(context.Background()); err == nil {
+		t.Fatal("expected custom CSV error")
+	}
+	if len(dns.records) != 1 || dns.records[0].Value != "1.1.1.1" {
+		t.Fatalf("dns records were mutated: %#v", dns.records)
+	}
+	if got := store.state.Records[0]; got.Value != "1.1.1.1" || store.state.LastError == "" {
+		t.Fatalf("state was not preserved with failure marker: %#v", store.state)
+	}
+}
+
 func TestTemporarySpeedTestUsesURLAndDoesNotMutateState(t *testing.T) {
 	var gotURL string
 	initial := state.State{
@@ -324,10 +419,49 @@ func (p staticPinger) Check(context.Context, []provider.Candidate) []ping.Result
 	return append([]ping.Result(nil), p...)
 }
 
+type keyedPinger map[string]ping.Result
+
+func (p keyedPinger) Check(_ context.Context, candidates []provider.Candidate) []ping.Result {
+	results := make([]ping.Result, 0, len(candidates))
+	for _, candidate := range candidates {
+		result, ok := p[resultKey(candidate)]
+		if !ok {
+			continue
+		}
+		result.Candidate = candidate
+		results = append(results, result)
+	}
+	return results
+}
+
 type staticSpeedTester []speedtest.Result
 
 func (s staticSpeedTester) Check(context.Context, []provider.Candidate) []speedtest.Result {
 	return append([]speedtest.Result(nil), s...)
+}
+
+type recordingSpeedTester struct {
+	seen    []provider.Candidate
+	results []speedtest.Result
+}
+
+func (r *recordingSpeedTester) Check(_ context.Context, candidates []provider.Candidate) []speedtest.Result {
+	r.seen = append(r.seen, candidates...)
+	return append([]speedtest.Result(nil), r.results...)
+}
+
+type staticCustomSource []provider.Candidate
+
+func (s staticCustomSource) Fetch(context.Context) ([]provider.Candidate, error) {
+	return append([]provider.Candidate(nil), s...), nil
+}
+
+type errorCustomSource struct {
+	err error
+}
+
+func (s errorCustomSource) Fetch(context.Context) ([]provider.Candidate, error) {
+	return nil, s.err
 }
 
 func recordByName(records []state.Record, name string) state.Record {
@@ -346,6 +480,16 @@ func dnsRecordByName(records []dnspod.Record, name string) dnspod.Record {
 		}
 	}
 	return dnspod.Record{}
+}
+
+func countRecordsByNode(records []state.Record, nodeID string) int {
+	count := 0
+	for _, record := range records {
+		if record.NodeID == nodeID {
+			count++
+		}
+	}
+	return count
 }
 
 type memoryDNS struct {

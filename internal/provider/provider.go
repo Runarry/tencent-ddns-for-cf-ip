@@ -41,6 +41,7 @@ type Candidate struct {
 	Loss      string `json:"loss,omitempty"`
 	Speed     string `json:"speed,omitempty"`
 	Bandwidth string `json:"bandwidth,omitempty"`
+	SpeedBPS  int64  `json:"speed_bps,omitempty"`
 }
 
 type response struct {

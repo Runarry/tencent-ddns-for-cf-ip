@@ -15,6 +15,7 @@
 - 可选独立 Cloudflare Pages/Workers 管理工具，用于查看优选 IP、查看测速结果、运行时管理订阅。
 - 每个 IP 都会 ping，ping 不通或平均延迟超过默认 `800ms` 会被丢弃。
 - 可选真实 HTTPS 测速：ping 预筛后连接候选 IP、使用你的 Cloudflare 业务域名下载固定字节数，并按实测速率更新受控 DNS 记录排序。
+- 可选自选 IP CSV：每次同步重新读取 CloudflareSpeedTest 风格的 `result.csv`，按下载速度取前 5 个自选 IP，经本机 ping 存活过滤后发布到 `custom` 渠道。
 - JSON 状态文件持久化，适合 Docker 挂载 `/data`。
 
 ## 快速开始
@@ -39,6 +40,9 @@ docker compose up -d --build
 - `PROVIDER_URL`：当前来源使用的地址，网页模式默认 `https://api.uouin.com/cloudflare.html`。
 - `PROVIDER_USERNAME`：仅 API 模式需要。
 - `PROVIDER_KEY`：仅 API 模式需要。
+- `PROVIDER_CUSTOM_ENABLED`：是否启用自选 IP CSV。
+- `PROVIDER_CUSTOM_RESULT_CSV`：自选 IP CSV 文件路径；Docker 中通常使用 `/data/result.csv`。
+- `PROVIDER_CUSTOM_TOP_N`：从 CSV 下载速度排序中取前 N 个，默认 `5`。
 - `DNSPOD_SECRET_ID`
 - `DNSPOD_SECRET_KEY`
 - `DNSPOD_DOMAIN`
@@ -93,6 +97,25 @@ provider:
   username: "your-uouin-username"
   key: "your-uouin-key"
   nodeids: ["ctcc", "bgp", "cucc"]
+```
+
+自选 IP CSV 配置：
+
+```yaml
+provider:
+  custom:
+    enabled: true
+    result_csv: "/data/result.csv"
+    top_n: 5
+```
+
+CSV 表头需包含 `IP 地址`、`平均延迟`、`下载速度(MB/s)`。自选 IP 固定使用 `custom` 渠道命名，例如 `cf-custom-01.cdn.q.example.com`；`sync.speed_test` 不会重新测速或重排 custom 渠道，状态中的速度来自 CSV，延迟来自同步时的本机 ping。
+
+如果使用 Docker，把 Windows 桌面 CSV 挂载到容器内路径：
+
+```yaml
+volumes:
+  - C:/Users/sleep/Desktop/result.csv:/data/result.csv:ro
 ```
 
 ## API

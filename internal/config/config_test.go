@@ -131,6 +131,52 @@ api:
 	}
 }
 
+func TestLoadCustomProviderConfigDefaultsAndEnvOverrides(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	data := []byte(`
+provider:
+  source: web
+  nodeids: ["ctcc"]
+  custom:
+    enabled: true
+    result_csv: "result.csv"
+dnspod:
+  secret_id: id
+  secret_key: key
+  domain: example.com
+sync:
+  managed_prefix: cf
+  default_nodeid: ctcc
+  max_records_per_node: 2
+  ping_threshold_ms: 1
+  ping_concurrency: 1
+  ping_packets: 1
+api:
+  bearer_token: secret
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Provider.Custom.Enabled || cfg.Provider.Custom.ResultCSV != "result.csv" || cfg.Provider.Custom.TopN != 5 {
+		t.Fatalf("custom provider config = %#v", cfg.Provider.Custom)
+	}
+
+	t.Setenv("PROVIDER_CUSTOM_RESULT_CSV", "/data/result.csv")
+	t.Setenv("PROVIDER_CUSTOM_TOP_N", "3")
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider.Custom.ResultCSV != "/data/result.csv" || cfg.Provider.Custom.TopN != 3 {
+		t.Fatalf("custom provider env overrides = %#v", cfg.Provider.Custom)
+	}
+}
+
 func TestSubscriptionsStateFileDefaultAndEnvOverride(t *testing.T) {
 	cfg := validConfig()
 	if cfg.State.SubscriptionsFile != "" {
@@ -292,6 +338,24 @@ func TestSpeedTestValidation(t *testing.T) {
 	cfg.Sync.SpeedTest.Timeout.Duration = 8 * time.Second
 	cfg.Sync.SpeedTest.Concurrency = 1
 	cfg.Sync.SpeedTest.CandidatesPerNode = 1
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCustomProviderValidation(t *testing.T) {
+	cfg := validConfig()
+	cfg.Provider.Custom.Enabled = true
+	cfg.Provider.Custom.TopN = 5
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected missing custom result csv error")
+	}
+	cfg.Provider.Custom.ResultCSV = "/data/result.csv"
+	cfg.Provider.Custom.TopN = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid custom top_n error")
+	}
+	cfg.Provider.Custom.TopN = 5
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}

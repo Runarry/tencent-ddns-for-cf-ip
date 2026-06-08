@@ -44,14 +44,21 @@ type Config struct {
 }
 
 type ProviderConfig struct {
-	Source   string   `yaml:"source" json:"source"`
-	URL      string   `yaml:"url" json:"url"`
-	APIURL   string   `yaml:"api_url" json:"api_url"`
-	WebURL   string   `yaml:"web_url" json:"web_url"`
-	Username string   `yaml:"username" json:"username"`
-	Key      string   `yaml:"key" json:"-"`
-	NodeIDs  []string `yaml:"nodeids" json:"nodeids"`
-	Timeout  Duration `yaml:"timeout" json:"timeout"`
+	Source   string               `yaml:"source" json:"source"`
+	URL      string               `yaml:"url" json:"url"`
+	APIURL   string               `yaml:"api_url" json:"api_url"`
+	WebURL   string               `yaml:"web_url" json:"web_url"`
+	Username string               `yaml:"username" json:"username"`
+	Key      string               `yaml:"key" json:"-"`
+	NodeIDs  []string             `yaml:"nodeids" json:"nodeids"`
+	Timeout  Duration             `yaml:"timeout" json:"timeout"`
+	Custom   CustomProviderConfig `yaml:"custom" json:"custom"`
+}
+
+type CustomProviderConfig struct {
+	Enabled   bool   `yaml:"enabled" json:"enabled"`
+	ResultCSV string `yaml:"result_csv" json:"result_csv"`
+	TopN      int    `yaml:"top_n" json:"top_n"`
 }
 
 type DNSPodConfig struct {
@@ -137,6 +144,10 @@ func Load(path string) (Config, error) {
 
 func normalize(cfg *Config) {
 	cfg.Provider.Source = strings.ToLower(strings.TrimSpace(cfg.Provider.Source))
+	cfg.Provider.Custom.ResultCSV = strings.TrimSpace(cfg.Provider.Custom.ResultCSV)
+	if cfg.Provider.Custom.TopN <= 0 {
+		cfg.Provider.Custom.TopN = 5
+	}
 	if cfg.Provider.URL == "" {
 		if cfg.Provider.Source == "api" {
 			cfg.Provider.URL = cfg.Provider.APIURL
@@ -195,6 +206,9 @@ func defaults() Config {
 			Timeout: Duration{
 				Duration: 20 * time.Second,
 			},
+			Custom: CustomProviderConfig{
+				TopN: 5,
+			},
 		},
 		DNSPod: DNSPodConfig{
 			RecordLine: "默认",
@@ -237,6 +251,9 @@ func applyEnv(cfg *Config) {
 	setString(&cfg.Provider.Key, "PROVIDER_KEY")
 	setCSV(&cfg.Provider.NodeIDs, "PROVIDER_NODEIDS")
 	setDuration(&cfg.Provider.Timeout, "PROVIDER_TIMEOUT")
+	setBool(&cfg.Provider.Custom.Enabled, "PROVIDER_CUSTOM_ENABLED")
+	setString(&cfg.Provider.Custom.ResultCSV, "PROVIDER_CUSTOM_RESULT_CSV")
+	setInt(&cfg.Provider.Custom.TopN, "PROVIDER_CUSTOM_TOP_N")
 
 	setString(&cfg.DNSPod.SecretID, "DNSPOD_SECRET_ID")
 	setString(&cfg.DNSPod.SecretKey, "DNSPOD_SECRET_KEY")
@@ -299,6 +316,12 @@ func (c Config) Validate() error {
 	}
 	if c.Provider.Source != "web" && c.Provider.Source != "api" {
 		return errors.New("provider.source must be web or api")
+	}
+	if c.Provider.Custom.Enabled && c.Provider.Custom.ResultCSV == "" {
+		return errors.New("provider.custom.result_csv must not be empty when custom provider is enabled")
+	}
+	if c.Provider.Custom.Enabled && c.Provider.Custom.TopN < 1 {
+		return errors.New("provider.custom.top_n must be greater than 0")
 	}
 	if c.Sync.ManagedPrefix == "" {
 		return errors.New("sync.managed_prefix must not be empty")

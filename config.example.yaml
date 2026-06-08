@@ -9,6 +9,11 @@ provider:
   key: ""
   nodeids: ["ctcc", "bgp", "cucc"]
   timeout: "20s"
+  custom:
+    enabled: false
+    # 容器内路径；Windows 桌面文件需要在 docker-compose.yml 中挂载到这个路径。
+    result_csv: "/data/result.csv"
+    top_n: 5
 
 dnspod:
   secret_id: "your-tencent-secret-id"

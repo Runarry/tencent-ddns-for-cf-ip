@@ -57,6 +57,13 @@ func main() {
 			Timeout: cfg.Provider.Timeout.Duration,
 		},
 	})
+	var customSource syncsvc.CustomSource
+	if cfg.Provider.Custom.Enabled {
+		customSource = provider.NewCustomCSVClient(provider.CustomCSVConfig{
+			Path: cfg.Provider.Custom.ResultCSV,
+			TopN: cfg.Provider.Custom.TopN,
+		})
+	}
 	pinger := ping.NewProber(ping.Config{
 		Timeout:      cfg.Sync.PingTimeout.Duration,
 		Threshold:    time.Duration(cfg.Sync.PingThresholdMS) * time.Millisecond,
@@ -107,6 +114,10 @@ func main() {
 			WildcardSubdomain: cfg.Sync.Fallback.WildcardSubdomain,
 			Target:            cfg.Sync.Fallback.Target,
 			Type:              cfg.Sync.Fallback.Type,
+		},
+		Custom: syncsvc.CustomConfig{
+			Enabled: cfg.Provider.Custom.Enabled,
+			Source:  customSource,
 		},
 	}, providerClient, pinger, speedTester, dnsClient, store, currentState, logger)
 
