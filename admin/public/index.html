@@ -166,6 +166,13 @@
             <input id="subscriptionKey" type="text" placeholder="留空则自动生成或保留原值" />
           </label>
           <label>
+            <span>生成方式</span>
+            <select id="subscriptionMode">
+              <option value="rewrite">优选改写</option>
+              <option value="merge">只合并</option>
+            </select>
+          </label>
+          <label id="subscriptionNodeidsLabel">
             <span>线路</span>
             <input id="subscriptionNodeids" type="text" placeholder="ctcc,bgp,cucc" />
           </label>

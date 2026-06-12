@@ -23,6 +23,7 @@ type Config struct {
 	Shares  []string
 	Format  string
 	NodeIDs []string
+	Mode    string
 }
 
 type subscriptionTarget struct {
@@ -34,6 +35,10 @@ type subscriptionTarget struct {
 }
 
 func Generate(cfg Config, records []state.Record) (string, error) {
+	if normalizeMode(cfg.Mode) == "merge" {
+		return generateMerged(cfg.Shares)
+	}
+
 	targets := preferredTargets(records, cfg.NodeIDs)
 	if len(targets) == 0 {
 		return "", ErrNoTargets
@@ -59,6 +64,29 @@ func Generate(cfg Config, records []state.Record) (string, error) {
 
 	body := strings.Join(lines, "\n") + "\n"
 	return base64.StdEncoding.EncodeToString([]byte(body)), nil
+}
+
+func generateMerged(shares []string) (string, error) {
+	lines := make([]string, 0, len(shares))
+	for _, share := range shares {
+		if share = strings.TrimSpace(share); share != "" {
+			lines = append(lines, share)
+		}
+	}
+	if len(lines) == 0 {
+		return "", ErrNoValidShares
+	}
+
+	body := strings.Join(lines, "\n") + "\n"
+	return base64.StdEncoding.EncodeToString([]byte(body)), nil
+}
+
+func normalizeMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return "rewrite"
+	}
+	return mode
 }
 
 func PreferredTargets(records []state.Record, nodeIDs []string) []string {

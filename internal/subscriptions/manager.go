@@ -14,7 +14,10 @@ import (
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/config"
 )
 
-const defaultFormat = "base64"
+const (
+	defaultFormat = "base64"
+	defaultMode   = "rewrite"
+)
 
 var (
 	ErrNotFound     = errors.New("subscription not found")
@@ -31,6 +34,7 @@ type Entry struct {
 	Shares      []string `json:"shares,omitempty"`
 	Format      string   `json:"format"`
 	NodeIDs     []string `json:"nodeids,omitempty"`
+	Mode        string   `json:"mode"`
 }
 
 type File struct {
@@ -143,6 +147,7 @@ type ListItem struct {
 	HasKey      bool     `json:"has_key"`
 	Format      string   `json:"format"`
 	NodeIDs     []string `json:"nodeids,omitempty"`
+	Mode        string   `json:"mode"`
 	Shares      []string `json:"shares,omitempty"`
 	ShareCount  int      `json:"share_count"`
 	URLTemplate string   `json:"url_template,omitempty"`
@@ -169,6 +174,7 @@ type UpsertRequest struct {
 	Shares      []string `json:"shares"`
 	Format      string   `json:"format"`
 	NodeIDs     []string `json:"nodeids"`
+	Mode        string   `json:"mode"`
 }
 
 type MutationResult struct {
@@ -186,6 +192,7 @@ func (m *Manager) Create(req UpsertRequest, baseURL string) (MutationResult, err
 		Shares:      req.Shares,
 		Format:      req.Format,
 		NodeIDs:     req.NodeIDs,
+		Mode:        req.Mode,
 	}
 	if strings.TrimSpace(entry.PublicToken) == "" {
 		entry.PublicToken = randomToken(24)
@@ -230,6 +237,7 @@ func (m *Manager) Update(id string, req UpsertRequest, baseURL string) (ListItem
 		Shares:      req.Shares,
 		Format:      req.Format,
 		NodeIDs:     req.NodeIDs,
+		Mode:        req.Mode,
 	}
 	if strings.TrimSpace(updated.PublicToken) == "" {
 		updated.PublicToken = m.entries[index].PublicToken
@@ -356,6 +364,7 @@ func (e Entry) Config() config.SubscriptionConfig {
 		Shares:      append([]string(nil), e.Shares...),
 		Format:      e.Format,
 		NodeIDs:     append([]string(nil), e.NodeIDs...),
+		Mode:        e.Mode,
 	}
 }
 
@@ -371,6 +380,7 @@ func listItemFromConfig(id string, source string, editable bool, sub config.Subs
 		HasKey:      strings.TrimSpace(sub.Key) != "",
 		Format:      sub.Format,
 		NodeIDs:     append([]string(nil), sub.NodeIDs...),
+		Mode:        sub.Mode,
 		Shares:      append([]string(nil), sub.Shares...),
 		ShareCount:  len(sub.Shares),
 	}
@@ -389,6 +399,7 @@ func normalizeEntry(entry *Entry) {
 	if entry.Format == "" {
 		entry.Format = defaultFormat
 	}
+	entry.Mode = normalizeMode(entry.Mode)
 	entry.Shares = normalizeStrings(entry.Shares, false)
 	entry.NodeIDs = normalizeStrings(entry.NodeIDs, true)
 }
@@ -401,8 +412,17 @@ func normalizeConfig(sub *config.SubscriptionConfig) {
 	if sub.Format == "" {
 		sub.Format = defaultFormat
 	}
+	sub.Mode = normalizeMode(sub.Mode)
 	sub.Shares = normalizeStrings(sub.Shares, false)
 	sub.NodeIDs = normalizeStrings(sub.NodeIDs, true)
+}
+
+func normalizeMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return defaultMode
+	}
+	return mode
 }
 
 func normalizeStrings(values []string, lower bool) []string {
@@ -426,6 +446,9 @@ func validateEntry(entry Entry) error {
 	}
 	if entry.Format != defaultFormat {
 		return fmt.Errorf("%w: format must be base64", ErrInvalidInput)
+	}
+	if entry.Mode != "rewrite" && entry.Mode != "merge" {
+		return fmt.Errorf("%w: mode must be rewrite or merge", ErrInvalidInput)
 	}
 	if entry.Enabled {
 		if entry.PublicToken == "" {

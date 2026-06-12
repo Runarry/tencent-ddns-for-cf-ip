@@ -83,6 +83,7 @@ function bindEvents() {
   $("saveSubscriptionButton").addEventListener("click", saveSubscription);
   $("deleteSubscriptionButton").addEventListener("click", deleteSubscription);
   $("rotateKeyButton").addEventListener("click", rotateKey);
+  $("subscriptionMode").addEventListener("change", updateSubscriptionModeUI);
   $("runSpeedTestButton").addEventListener("click", runTemporarySpeedTest);
   $("applySpeedTestButton").addEventListener("click", () => applyTemporarySpeedTest());
   $("speedPresetSelect").addEventListener("change", () => {
@@ -179,7 +180,7 @@ function renderSubscriptions() {
             </div>
             <span class="badge">${sub.enabled ? "启用" : "停用"} · ${sub.editable ? "可编辑" : "配置只读"}</span>
           </div>
-          <small>${escapeHTML((sub.nodeids || []).join(", ") || "全部线路")} · ${sub.share_count || 0} 条分享</small>
+          <small>${escapeHTML(modeLabel(sub.mode))} · ${escapeHTML(subscriptionLineLabel(sub))} · ${sub.share_count || 0} 条分享</small>
           <div class="actions">
             <button class="secondary" type="button" data-copy="${escapeAttr(sub.url_template || "")}">复制地址</button>
             <button class="secondary" type="button" data-edit="${escapeAttr(sub.id)}" ${sub.editable ? "" : "disabled"}>编辑</button>
@@ -296,12 +297,14 @@ function openSubscriptionDialog(sub = null) {
   $("subscriptionName").value = sub?.name || "";
   $("subscriptionToken").value = sub?.public_token || "";
   $("subscriptionKey").value = "";
+  $("subscriptionMode").value = sub?.mode || "rewrite";
   $("subscriptionNodeids").value = (sub?.nodeids || []).join(",");
   $("subscriptionShares").value = (sub?.shares || []).join("\n");
   $("dialogSecret").textContent = "";
   $("dialogTitle").textContent = sub ? "编辑订阅" : "新增订阅";
   $("deleteSubscriptionButton").hidden = !sub;
   $("rotateKeyButton").hidden = !sub;
+  updateSubscriptionModeUI();
   $("subscriptionDialog").showModal();
 }
 
@@ -432,9 +435,26 @@ function subscriptionPayload() {
     public_token: $("subscriptionToken").value.trim(),
     key: $("subscriptionKey").value.trim(),
     format: "base64",
+    mode: $("subscriptionMode").value || "rewrite",
     nodeids: splitLines($("subscriptionNodeids").value.replaceAll(",", "\n")),
     shares: splitLines($("subscriptionShares").value),
   };
+}
+
+function updateSubscriptionModeUI() {
+  const mode = $("subscriptionMode").value || "rewrite";
+  $("subscriptionNodeidsLabel").hidden = mode === "merge";
+}
+
+function modeLabel(mode) {
+  return mode === "merge" ? "只合并" : "优选改写";
+}
+
+function subscriptionLineLabel(sub) {
+  if (sub.mode === "merge") {
+    return "不使用优选";
+  }
+  return (sub.nodeids || []).join(", ") || "全部线路";
 }
 
 function setTab(tab) {

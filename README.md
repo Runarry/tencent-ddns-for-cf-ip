@@ -11,7 +11,7 @@
 - 只管理 `managed_prefix` 和 `managed_base_subdomain` 生成的记录，例如 `cf-cctcc-01.cdn.q.example.com`，不会修改其他 DNS 记录。
 - 默认域名可自动使用当前最快的电信节点，例如更新 `cdn.q.example.com` 到最快 `ctcc` IP。
 - 支持通配符 CNAME 回落：删除 `cf-cctcc-01.cdn.q.example.com` 后，可由 `*.cdn.q.example.com` 回落到 `cdn.q.example.com`。
-- 可公开多个长路径订阅地址，将输入的 3x-ui/v2ray 分享字符串批量替换为当前优选域名。
+- 可公开多个长路径订阅地址，可将输入的 3x-ui/v2ray 分享字符串批量替换为当前优选域名，也可只合并原始分享链接。
 - 可选独立 Cloudflare Pages/Workers 管理工具，用于查看优选 IP、查看测速结果、运行时管理订阅。
 - 每个 IP 都会 ping，ping 不通或平均延迟超过默认 `800ms` 会被丢弃。
 - 可选真实 HTTPS 测速：ping 预筛后连接候选 IP、使用你的 Cloudflare 业务域名下载固定字节数，并按实测速率更新受控 DNS 记录排序。
@@ -70,7 +70,8 @@ docker compose up -d --build
 - `subscriptions[].name`：订阅名称，仅用于配置识别和诊断。
 - `subscriptions[].public_token`：公开订阅路径 token，访问地址为 `/sub/<public_token>?key=<key>`，无需 Bearer Token，至少 16 个字符。
 - `subscriptions[].key`：订阅 query 参数鉴权 key，启用订阅时必填，建议使用足够长的随机值。
-- `subscriptions[].nodeids`：可选线路过滤，例如 `["ctcc"]`；为空时使用全部非 fallback 优选域名。请求可用 `nodeids=ctcc,bgp` 动态收窄线路范围。
+- `subscriptions[].mode`：订阅生成方式，`rewrite` 为默认值，会使用优选 FQDN 改写分享链接；`merge` 只合并分享链接，不使用优选 IP。
+- `subscriptions[].nodeids`：可选线路过滤，例如 `["ctcc"]`；仅 `mode: rewrite` 生效。为空时使用全部非 fallback 优选域名。请求可用 `nodeids=ctcc,bgp` 动态收窄线路范围。
 - `subscriptions[].shares`：原始分享字符串列表，支持 `vmess`、`vless`、`trojan`、`ss`、`hysteria`、`hysteria2`。
 - `subscriptions[].format`：当前固定为 `base64`。
 
@@ -144,7 +145,9 @@ curl "http://localhost:8080/sub/replace-with-a-long-random-subscription-token?ke
 curl "http://localhost:8080/sub/replace-with-a-long-random-subscription-token?key=replace-with-a-long-random-subscription-key&nodeids=ctcc"
 ```
 
-订阅内容会把分享链接的实际连接地址替换为当前优选 FQDN，例如 `cf-ctcc-01.cdn.q.example.com`；`sni`、`host`、`path` 等传输参数保持原值。生成的节点显示名会保留原名称，并追加线路、节点主机、ping 和可用测速概要，例如 `HongKong [ctcc cf-ctcc-01 ping 40ms 12.3MB/s]`。配置了 `nodeids` 时，只会使用匹配线路的优选 FQDN；请求里的 `nodeids` 只能在配置允许范围内继续收窄。
+`mode: rewrite` 的订阅内容会把分享链接的实际连接地址替换为当前优选 FQDN，例如 `cf-ctcc-01.cdn.q.example.com`；`sni`、`host`、`path` 等传输参数保持原值。生成的节点显示名会保留原名称，并追加线路、节点主机、ping 和可用测速概要，例如 `HongKong [ctcc cf-ctcc-01 ping 40ms 12.3MB/s]`。配置了 `nodeids` 时，只会使用匹配线路的优选 FQDN；请求里的 `nodeids` 只能在配置允许范围内继续收窄。
+
+`mode: merge` 的订阅内容只会把 `shares` 中的非空分享字符串按原顺序合并为 base64 订阅，保留重复项，不解析协议，不改写连接地址，也不依赖当前优选记录；请求里的 `nodeids` 参数会被忽略。
 
 ## Cloudflare 管理工具
 

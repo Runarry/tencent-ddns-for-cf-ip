@@ -219,6 +219,47 @@ func TestPublicSubscriptionEndpointReportsNoTargets(t *testing.T) {
 	}
 }
 
+func TestPublicSubscriptionEndpointMergeModeDoesNotRequireTargets(t *testing.T) {
+	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, nil, fakeDNS{}, fakeStore{}, state.Empty(), slog.Default())
+	handler := NewServer(Config{
+		Token: "secret",
+		Subscriptions: []config.SubscriptionConfig{
+			{
+				Enabled:     true,
+				PublicToken: "long-random-public-token",
+				Key:         "subscription-key",
+				Format:      "base64",
+				Mode:        "merge",
+				NodeIDs:     []string{"ctcc"},
+				Shares: []string{
+					" vless://uuid@old.example.com:443?security=tls&sni=sni.example.com#name ",
+					"vless://uuid@old.example.com:443?security=tls&sni=sni.example.com#name",
+					"trojan://pass@origin.example.com:8443?security=tls#trojan",
+				},
+			},
+		},
+	}, service, config.Config{})
+
+	req := httptest.NewRequest(http.MethodGet, "/sub/long-random-public-token?key=subscription-key&nodeids=bgp", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	decoded, err := base64.StdEncoding.DecodeString(rr.Body.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Join([]string{
+		"vless://uuid@old.example.com:443?security=tls&sni=sni.example.com#name",
+		"vless://uuid@old.example.com:443?security=tls&sni=sni.example.com#name",
+		"trojan://pass@origin.example.com:8443?security=tls#trojan",
+	}, "\n") + "\n"
+	if string(decoded) != want {
+		t.Fatalf("merged subscription = %q, want %q", decoded, want)
+	}
+}
+
 func TestPublicSubscriptionEndpointQueryNodeIDsNarrowConfiguredNodeIDs(t *testing.T) {
 	initial := state.State{
 		Records: []state.Record{
@@ -371,6 +412,49 @@ func TestAdminSubscriptionsCRUDAndPublicEndpointUseWritableSubscriptions(t *test
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("delete code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAdminSubscriptionsMergeModePublicEndpointUseWritableSubscriptions(t *testing.T) {
+	manager, err := subscriptions.NewManager(nil, subscriptions.NewStore(filepath.Join(t.TempDir(), "subscriptions.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, nil, fakeDNS{}, fakeStore{}, state.Empty(), slog.Default())
+	handler := NewServer(Config{Token: "secret", SubscriptionManager: manager}, service, config.Config{})
+
+	body := strings.NewReader(`{"name":"merge","enabled":true,"format":"base64","mode":"merge","nodeids":["ctcc"],"shares":["vless://uuid@old.example.com:443#name","trojan://pass@origin.example.com:443#trojan"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/subscriptions", body)
+	req.Header.Set("Authorization", "Bearer secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var created struct {
+		Item subscriptions.ListItem `json:"item"`
+		Key  string                 `json:"key"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Item.Mode != "merge" {
+		t.Fatalf("created mode = %q", created.Item.Mode)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/sub/"+created.Item.PublicToken+"?key="+created.Key+"&nodeids=bgp", nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("subscription code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	decoded, err := base64.StdEncoding.DecodeString(rr.Body.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "vless://uuid@old.example.com:443#name\ntrojan://pass@origin.example.com:443#trojan\n"
+	if string(decoded) != want {
+		t.Fatalf("merged subscription = %q, want %q", decoded, want)
 	}
 }
 

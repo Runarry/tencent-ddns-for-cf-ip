@@ -44,6 +44,7 @@ func TestStoreLoadMissingEmptyInvalidAndRoundTrip(t *testing.T) {
 		PublicToken: "long-random-public-token",
 		Key:         "subscription-key",
 		Format:      "base64",
+		Mode:        " MERGE ",
 		NodeIDs:     []string{"CTCC"},
 		Shares:      []string{" vless://uuid@old.example.com:443#name "},
 	}}
@@ -54,7 +55,7 @@ func TestStoreLoadMissingEmptyInvalidAndRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].NodeIDs[0] != "ctcc" || got[0].Shares[0] != "vless://uuid@old.example.com:443#name" {
+	if len(got) != 1 || got[0].NodeIDs[0] != "ctcc" || got[0].Mode != "merge" || got[0].Shares[0] != "vless://uuid@old.example.com:443#name" {
 		t.Fatalf("round-trip entries = %#v", got)
 	}
 }
@@ -68,6 +69,7 @@ func TestManagerMergesStaticAndWritableSubscriptions(t *testing.T) {
 		PublicToken: "state-random-public-token",
 		Key:         "state-key",
 		Format:      "base64",
+		Mode:        "merge",
 		NodeIDs:     []string{"bgp"},
 		Shares:      []string{"trojan://pass@old.example.com:443#name"},
 	}}); err != nil {
@@ -90,9 +92,15 @@ func TestManagerMergesStaticAndWritableSubscriptions(t *testing.T) {
 	if !ok || configSub.Name != "config" {
 		t.Fatalf("missing static subscription: %#v", configSub)
 	}
+	if configSub.Mode != "rewrite" {
+		t.Fatalf("static subscription mode was not defaulted: %#v", configSub)
+	}
 	stateSub, ok := manager.ConfigForToken("state-random-public-token")
 	if !ok || stateSub.Name != "state" {
 		t.Fatalf("missing writable subscription: %#v", stateSub)
+	}
+	if stateSub.Mode != "merge" {
+		t.Fatalf("writable subscription mode was not preserved: %#v", stateSub)
 	}
 }
 
@@ -116,7 +124,7 @@ func TestManagerCreateUpdateDeleteAndRotate(t *testing.T) {
 	if created.Key == "" || created.Item.PublicToken == "" || !created.Item.Editable || !created.Item.HasKey {
 		t.Fatalf("unexpected create response: %#v", created)
 	}
-	if created.Item.ShareCount != 1 || created.Item.NodeIDs[0] != "ctcc" {
+	if created.Item.ShareCount != 1 || created.Item.NodeIDs[0] != "ctcc" || created.Item.Mode != "rewrite" {
 		t.Fatalf("unexpected normalized item: %#v", created.Item)
 	}
 
@@ -125,13 +133,14 @@ func TestManagerCreateUpdateDeleteAndRotate(t *testing.T) {
 		Enabled:     true,
 		PublicToken: created.Item.PublicToken,
 		Format:      "base64",
+		Mode:        "merge",
 		NodeIDs:     []string{"bgp"},
 		Shares:      []string{"trojan://pass@old.example.com:443#name"},
 	}, "https://admin.example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Name != "renamed" || updated.NodeIDs[0] != "bgp" {
+	if updated.Name != "renamed" || updated.NodeIDs[0] != "bgp" || updated.Mode != "merge" {
 		t.Fatalf("unexpected update response: %#v", updated)
 	}
 
@@ -160,6 +169,21 @@ func TestManagerCreateUpdateDeleteAndRotate(t *testing.T) {
 	}
 	if len(saved.Subscriptions) != 0 {
 		t.Fatalf("expected empty saved file, got %#v", saved.Subscriptions)
+	}
+}
+
+func TestManagerRejectsInvalidMode(t *testing.T) {
+	manager, err := NewManager(nil, NewStore(filepath.Join(t.TempDir(), "subscriptions.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Create(UpsertRequest{
+		Enabled: true,
+		Format:  "base64",
+		Mode:    "invalid",
+		Shares:  []string{"vless://uuid@old.example.com:443#name"},
+	}, "https://admin.example.com"); err == nil {
+		t.Fatal("expected invalid mode error")
 	}
 }
 

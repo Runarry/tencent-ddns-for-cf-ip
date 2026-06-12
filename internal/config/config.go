@@ -118,6 +118,7 @@ type SubscriptionConfig struct {
 	Shares      []string `yaml:"shares" json:"shares,omitempty"`
 	Format      string   `yaml:"format" json:"format"`
 	NodeIDs     []string `yaml:"nodeids" json:"nodeids,omitempty"`
+	Mode        string   `yaml:"mode" json:"mode,omitempty"`
 }
 
 func Load(path string) (Config, error) {
@@ -164,6 +165,7 @@ func normalize(cfg *Config) {
 		if sub.Format == "" {
 			sub.Format = "base64"
 		}
+		sub.Mode = normalizeSubscriptionMode(sub.Mode)
 		shares := make([]string, 0, len(sub.Shares))
 		for _, share := range sub.Shares {
 			if share = strings.TrimSpace(share); share != "" {
@@ -384,6 +386,10 @@ func (c Config) Validate() error {
 		if format != "base64" {
 			return fmt.Errorf("subscriptions[%d].format must be base64", i)
 		}
+		mode := normalizeSubscriptionMode(sub.Mode)
+		if mode != "rewrite" && mode != "merge" {
+			return fmt.Errorf("subscriptions[%d].mode must be rewrite or merge", i)
+		}
 		if !sub.Enabled {
 			continue
 		}
@@ -408,6 +414,14 @@ func (c Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func normalizeSubscriptionMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return "rewrite"
+	}
+	return mode
 }
 
 func (c Config) Redacted() Config {

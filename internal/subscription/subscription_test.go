@@ -3,6 +3,7 @@ package subscription
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
@@ -155,6 +156,46 @@ func TestGenerateUsesPreferredFQDNsAndBase64Subscription(t *testing.T) {
 	}
 	if strings.Contains(string(decoded), "*.cdn.example.com") {
 		t.Fatalf("fallback target leaked into subscription: %q", decoded)
+	}
+}
+
+func TestGenerateMergeModeCombinesSharesWithoutTargetsOrRewrite(t *testing.T) {
+	shares := []string{
+		"",
+		" vless://uuid@old.example.com:443?security=tls&sni=sni.example.com#name ",
+		"trojan://pass@origin.example.com:8443?security=tls#trojan",
+		"vless://uuid@old.example.com:443?security=tls&sni=sni.example.com#name",
+	}
+	out, err := Generate(Config{
+		Format: "base64",
+		Mode:   "merge",
+		Shares: shares,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Join([]string{
+		"vless://uuid@old.example.com:443?security=tls&sni=sni.example.com#name",
+		"trojan://pass@origin.example.com:8443?security=tls#trojan",
+		"vless://uuid@old.example.com:443?security=tls&sni=sni.example.com#name",
+	}, "\n") + "\n"
+	if string(decoded) != want {
+		t.Fatalf("merged subscription = %q, want %q", decoded, want)
+	}
+}
+
+func TestGenerateMergeModeEmptySharesReturnsNoValidShares(t *testing.T) {
+	_, err := Generate(Config{
+		Format: "base64",
+		Mode:   "merge",
+		Shares: []string{"", "   "},
+	}, nil)
+	if !errors.Is(err, ErrNoValidShares) {
+		t.Fatalf("err = %v, want ErrNoValidShares", err)
 	}
 }
 

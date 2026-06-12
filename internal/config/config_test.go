@@ -36,6 +36,7 @@ subscriptions:
       - "vless://uuid@old.example.com:443#name"
   - name: disabled
     enabled: false
+    mode: " MERGE "
     public_token: ""
     shares: []
 `)
@@ -52,6 +53,9 @@ subscriptions:
 	}
 	if cfg.Subscriptions[0].Format != "base64" || cfg.Subscriptions[0].Key != "subscription-key" || cfg.Subscriptions[0].NodeIDs[0] != "ctcc" {
 		t.Fatalf("subscription was not normalized: %#v", cfg.Subscriptions[0])
+	}
+	if cfg.Subscriptions[0].Mode != "rewrite" || cfg.Subscriptions[1].Mode != "merge" {
+		t.Fatalf("subscription modes were not normalized: %#v", cfg.Subscriptions)
 	}
 }
 
@@ -301,6 +305,12 @@ func TestSubscriptionValidation(t *testing.T) {
 			name: "invalid format",
 			mutate: func(c *Config) {
 				c.Subscriptions[0].Format = "plain"
+			},
+		},
+		{
+			name: "invalid mode",
+			mutate: func(c *Config) {
+				c.Subscriptions[0].Mode = "invalid"
 			},
 		},
 		{

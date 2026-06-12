@@ -109,15 +109,20 @@ func (s *Server) subscription(w http.ResponseWriter, r *http.Request) {
 		writeText(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	nodeIDs, ok := effectiveSubscriptionNodeIDs(sub.NodeIDs, r.URL.Query()["nodeids"])
-	if !ok {
-		writeText(w, http.StatusServiceUnavailable, subscription.ErrNoTargets.Error())
-		return
+	nodeIDs := sub.NodeIDs
+	if !isMergeSubscription(sub) {
+		var ok bool
+		nodeIDs, ok = effectiveSubscriptionNodeIDs(sub.NodeIDs, r.URL.Query()["nodeids"])
+		if !ok {
+			writeText(w, http.StatusServiceUnavailable, subscription.ErrNoTargets.Error())
+			return
+		}
 	}
 	body, err := subscription.Generate(subscription.Config{
 		Shares:  sub.Shares,
 		Format:  sub.Format,
 		NodeIDs: nodeIDs,
+		Mode:    sub.Mode,
 	}, s.service.Records())
 	if errors.Is(err, subscription.ErrNoTargets) {
 		writeText(w, http.StatusServiceUnavailable, err.Error())
@@ -265,6 +270,10 @@ func findSubscription(subscriptions []config.SubscriptionConfig, token string) (
 		}
 	}
 	return config.SubscriptionConfig{}, false
+}
+
+func isMergeSubscription(sub config.SubscriptionConfig) bool {
+	return strings.EqualFold(strings.TrimSpace(sub.Mode), "merge")
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
