@@ -119,6 +119,8 @@ volumes:
   - C:/Users/sleep/Desktop/result.csv:/data/result.csv:ro
 ```
 
+如果需要通过 `PUT /api/v1/admin/custom-ips/csv` 更新该文件，挂载必须可写，例如去掉末尾的 `:ro`。
+
 ## API
 
 健康检查无需鉴权：
@@ -136,7 +138,10 @@ curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/upda
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/config
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/admin/subscriptions
 curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" http://localhost:8080/api/v1/admin/subscriptions
+curl -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: text/csv" --data-binary @result.csv http://localhost:8080/api/v1/admin/custom-ips/csv
 ```
+
+`PUT /api/v1/admin/custom-ips/csv` 需要启用 `provider.custom.enabled` 并配置 `provider.custom.result_csv`。请求体是原始 CloudflareSpeedTest `result.csv` 内容；后端会先按现有 CSV 规则校验，替换配置指向的文件，然后立即触发一次同步。
 
 订阅地址无需 Bearer Token，但必须带该订阅配置的 `key`。每个 `subscriptions` 项都有自己的地址：
 

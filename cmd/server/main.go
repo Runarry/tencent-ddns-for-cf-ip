@@ -125,6 +125,11 @@ func main() {
 		Token:               cfg.API.BearerToken,
 		Subscriptions:       cfg.Subscriptions,
 		SubscriptionManager: subscriptionManager,
+		CustomCSV: api.CustomCSVConfig{
+			Enabled: cfg.Provider.Custom.Enabled,
+			Path:    cfg.Provider.Custom.ResultCSV,
+			TopN:    cfg.Provider.Custom.TopN,
+		},
 	}, service, cfg.Redacted())
 	server := &http.Server{
 		Addr:              cfg.API.ListenAddr,

@@ -1,23 +1,36 @@
 package api
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/config"
+	"github.com/sleep/tencent-ddns-for-cf-ip/internal/provider"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/subscription"
 	subscriptions "github.com/sleep/tencent-ddns-for-cf-ip/internal/subscriptions"
 	syncsvc "github.com/sleep/tencent-ddns-for-cf-ip/internal/sync"
 )
 
+const maxCustomCSVUploadBytes int64 = 2 * 1024 * 1024
+
 type Config struct {
 	Token               string
 	Subscriptions       []config.SubscriptionConfig
 	SubscriptionManager *subscriptions.Manager
+	CustomCSV           CustomCSVConfig
+}
+
+type CustomCSVConfig struct {
+	Enabled bool
+	Path    string
+	TopN    int
 }
 
 type Server struct {
@@ -35,6 +48,14 @@ type speedTestPreset struct {
 
 type temporarySpeedTestRequest struct {
 	URL string `json:"url"`
+}
+
+type customCSVUpdateResponse struct {
+	Saved      bool             `json:"saved"`
+	Path       string           `json:"path"`
+	Candidates int              `json:"candidates"`
+	Sync       *syncsvc.Summary `json:"sync,omitempty"`
+	Error      string           `json:"error,omitempty"`
 }
 
 var speedTestPresets = []speedTestPreset{
@@ -63,6 +84,7 @@ func NewServer(cfg Config, service *syncsvc.Service, redacted config.Config) htt
 	mux.HandleFunc("PUT /api/v1/admin/subscriptions/{id}", s.withAuth(s.adminUpdateSubscription))
 	mux.HandleFunc("DELETE /api/v1/admin/subscriptions/{id}", s.withAuth(s.adminDeleteSubscription))
 	mux.HandleFunc("POST /api/v1/admin/subscriptions/{id}/rotate-secret", s.withAuth(s.adminRotateSubscriptionSecret))
+	mux.HandleFunc("PUT /api/v1/admin/custom-ips/csv", s.withAuth(s.adminUpdateCustomCSV))
 	mux.HandleFunc("GET /api/v1/admin/speed-test-presets", s.withAuth(s.adminSpeedTestPresets))
 	mux.HandleFunc("POST /api/v1/admin/speed-tests", s.withAuth(s.adminRunTemporarySpeedTest))
 	mux.HandleFunc("POST /api/v1/admin/speed-tests/{id}/apply", s.withAuth(s.adminApplyTemporarySpeedTest))
@@ -211,6 +233,68 @@ func (s *Server) adminRotateSubscriptionSecret(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) adminUpdateCustomCSV(w http.ResponseWriter, r *http.Request) {
+	if !s.cfg.CustomCSV.Enabled {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "custom CSV provider is not enabled"})
+		return
+	}
+	path := strings.TrimSpace(s.cfg.CustomCSV.Path)
+	if path == "" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "custom CSV path is not configured"})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxCustomCSVUploadBytes)
+	defer r.Body.Close()
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "custom CSV body must be 2 MiB or less"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "read custom CSV body: " + err.Error()})
+		return
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "custom CSV body must not be empty"})
+		return
+	}
+
+	candidates, err := provider.ParseCustomCSV(bytes.NewReader(data), s.cfg.CustomCSV.TopN)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if len(candidates) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "custom CSV contains no valid IP rows"})
+		return
+	}
+	if err := writeFileAtomic(path, data); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "save custom CSV: " + err.Error()})
+		return
+	}
+
+	summary, err := s.service.Run(r.Context())
+	response := customCSVUpdateResponse{
+		Saved:      true,
+		Path:       path,
+		Candidates: len(candidates),
+		Sync:       &summary,
+	}
+	if err != nil {
+		response.Error = err.Error()
+		if errors.Is(err, syncsvc.ErrUpdateInProgress) {
+			response.Sync = nil
+			writeJSON(w, http.StatusConflict, response)
+			return
+		}
+		writeJSON(w, http.StatusBadGateway, response)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) adminSpeedTestPresets(w http.ResponseWriter, r *http.Request) {
@@ -403,4 +487,19 @@ func writeText(w http.ResponseWriter, status int, value string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(value))
+}
+
+func writeFileAtomic(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(path)
+		return os.Rename(tmp, path)
+	}
+	return nil
 }

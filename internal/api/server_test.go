@@ -8,9 +8,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/config"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/dnspod"
@@ -101,6 +103,213 @@ func TestAdminSpeedTestPresets(t *testing.T) {
 	}
 	if len(got.Presets) != 4 || got.Presets[1].Name != "Cloudflare 10MB" || got.Presets[1].URL != "https://speed.cloudflare.com/__down?bytes=10485760" {
 		t.Fatalf("unexpected presets: %#v", got.Presets)
+	}
+}
+
+func TestAdminCustomCSVRequiresAuth(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "result.csv")
+	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, nil, fakeDNS{}, fakeStore{}, state.Empty(), slog.Default())
+	handler := NewServer(Config{
+		Token: "secret",
+		CustomCSV: CustomCSVConfig{
+			Enabled: true,
+			Path:    path,
+			TopN:    5,
+		},
+	}, service, config.Config{})
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/custom-ips/csv", strings.NewReader(validCustomCSV()))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("custom CSV was written without auth, stat err = %v", err)
+	}
+}
+
+func TestAdminCustomCSVRejectsDisabledProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "result.csv")
+	providerClient := &countingProvider{}
+	service := syncsvc.NewService(syncsvc.Config{}, providerClient, fakePinger{}, nil, fakeDNS{}, fakeStore{}, state.Empty(), slog.Default())
+	handler := NewServer(Config{Token: "secret"}, service, config.Config{})
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/custom-ips/csv", strings.NewReader(validCustomCSV()))
+	req.Header.Set("Authorization", "Bearer secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("custom CSV was written while disabled, stat err = %v", err)
+	}
+	if providerClient.calls != 0 {
+		t.Fatalf("sync was triggered while disabled, calls = %d", providerClient.calls)
+	}
+}
+
+func TestAdminCustomCSVRejectsInvalidCSVWithoutSideEffects(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "result.csv")
+	providerClient := &countingProvider{}
+	service := syncsvc.NewService(syncsvc.Config{}, providerClient, fakePinger{}, nil, fakeDNS{}, fakeStore{}, state.Empty(), slog.Default())
+	handler := NewServer(Config{
+		Token: "secret",
+		CustomCSV: CustomCSVConfig{
+			Enabled: true,
+			Path:    path,
+			TopN:    5,
+		},
+	}, service, config.Config{})
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/custom-ips/csv", strings.NewReader("IP,速度\n1.1.1.1,10\n"))
+	req.Header.Set("Authorization", "Bearer secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("invalid custom CSV was written, stat err = %v", err)
+	}
+	if providerClient.calls != 0 {
+		t.Fatalf("sync was triggered for invalid CSV, calls = %d", providerClient.calls)
+	}
+}
+
+func TestAdminCustomCSVRejectsCSVWithoutValidRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "result.csv")
+	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, nil, fakeDNS{}, fakeStore{}, state.Empty(), slog.Default())
+	handler := NewServer(Config{
+		Token: "secret",
+		CustomCSV: CustomCSVConfig{
+			Enabled: true,
+			Path:    path,
+			TopN:    5,
+		},
+	}, service, config.Config{})
+
+	body := "IP 地址,平均延迟,下载速度(MB/s)\nnot-an-ip,20,10\n"
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/custom-ips/csv", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("CSV without valid rows was written, stat err = %v", err)
+	}
+}
+
+func TestAdminCustomCSVWritesFileAndRunsSync(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "result.csv")
+	providerClient := &countingProvider{}
+	service := syncsvc.NewService(syncsvc.Config{
+		NodeIDs:              []string{"ctcc"},
+		ManagedPrefix:        "cf",
+		ManagedBaseSubdomain: "cdn",
+		DefaultNodeID:        "ctcc",
+		MaxRecordsPerNode:    5,
+		Domain:               "example.com",
+		Custom: syncsvc.CustomConfig{
+			Enabled: true,
+			Source: provider.NewCustomCSVClient(provider.CustomCSVConfig{
+				Path: path,
+				TopN: 5,
+			}),
+		},
+	}, providerClient, alivePinger{}, nil, fakeDNS{}, fakeStore{}, state.Empty(), slog.Default())
+	handler := NewServer(Config{
+		Token: "secret",
+		CustomCSV: CustomCSVConfig{
+			Enabled: true,
+			Path:    path,
+			TopN:    5,
+		},
+	}, service, config.Config{})
+
+	csvBody := validCustomCSV()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/custom-ips/csv", strings.NewReader(csvBody))
+	req.Header.Set("Authorization", "Bearer secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got customCSVUpdateResponse
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Saved || got.Path != path || got.Candidates != 2 || got.Sync == nil || !got.Sync.Success {
+		t.Fatalf("unexpected response: %#v", got)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(saved) != csvBody {
+		t.Fatalf("saved CSV = %q, want %q", saved, csvBody)
+	}
+	if providerClient.calls != 1 {
+		t.Fatalf("sync provider calls = %d, want 1", providerClient.calls)
+	}
+	records := service.Records()
+	if len(records) != 2 || records[0].NodeID != provider.CustomNodeID || records[0].Value != "1.1.1.1" {
+		t.Fatalf("sync did not publish custom records: %#v", records)
+	}
+}
+
+func TestAdminCustomCSVSyncConflictStillLeavesSavedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "result.csv")
+	providerClient := &blockingProvider{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	service := syncsvc.NewService(syncsvc.Config{NodeIDs: []string{"ctcc"}}, providerClient, fakePinger{}, nil, fakeDNS{}, fakeStore{}, state.Empty(), slog.Default())
+	handler := NewServer(Config{
+		Token: "secret",
+		CustomCSV: CustomCSVConfig{
+			Enabled: true,
+			Path:    path,
+			TopN:    5,
+		},
+	}, service, config.Config{})
+	runDone := make(chan error, 1)
+	go func() {
+		_, err := service.Run(context.Background())
+		runDone <- err
+	}()
+	<-providerClient.started
+	defer func() {
+		close(providerClient.release)
+		if err := <-runDone; err != nil {
+			t.Errorf("background sync error = %v", err)
+		}
+	}()
+
+	csvBody := validCustomCSV()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/custom-ips/csv", strings.NewReader(csvBody))
+	req.Header.Set("Authorization", "Bearer secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got customCSVUpdateResponse
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Saved || got.Error != syncsvc.ErrUpdateInProgress.Error() {
+		t.Fatalf("unexpected response: %#v", got)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(saved) != csvBody {
+		t.Fatalf("saved CSV = %q, want %q", saved, csvBody)
 	}
 }
 
@@ -511,10 +720,48 @@ func (fakeProvider) Fetch(context.Context, []string) (map[string][]provider.Cand
 	return map[string][]provider.Candidate{}, nil
 }
 
+type countingProvider struct {
+	calls int
+}
+
+func (p *countingProvider) Fetch(context.Context, []string) (map[string][]provider.Candidate, error) {
+	p.calls++
+	return map[string][]provider.Candidate{}, nil
+}
+
+type blockingProvider struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *blockingProvider) Fetch(ctx context.Context, _ []string) (map[string][]provider.Candidate, error) {
+	close(p.started)
+	select {
+	case <-p.release:
+		return map[string][]provider.Candidate{}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 type fakePinger struct{}
 
 func (fakePinger) Check(context.Context, []provider.Candidate) []ping.Result {
 	return nil
+}
+
+type alivePinger struct{}
+
+func (alivePinger) Check(_ context.Context, candidates []provider.Candidate) []ping.Result {
+	results := make([]ping.Result, 0, len(candidates))
+	for _, candidate := range candidates {
+		results = append(results, ping.Result{
+			Candidate: candidate,
+			Latency:   20 * time.Millisecond,
+			Alive:     true,
+		})
+	}
+	return results
 }
 
 type fakeDNS struct{}
@@ -530,3 +777,9 @@ type fakeStore struct{}
 
 func (fakeStore) Load() (state.State, error) { return state.Empty(), nil }
 func (fakeStore) Save(state.State) error     { return nil }
+
+func validCustomCSV() string {
+	return "IP 地址,平均延迟,下载速度(MB/s)\n" +
+		"1.1.1.1,20,10\n" +
+		"1.1.1.2,30,9\n"
+}
