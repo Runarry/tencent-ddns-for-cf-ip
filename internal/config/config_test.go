@@ -219,8 +219,87 @@ api:
 	}
 }
 
+func TestLoadSubscriptionSourcesAndRemoteSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	data := []byte(`
+provider:
+  source: web
+  nodeids: ["ctcc"]
+dnspod:
+  secret_id: id
+  secret_key: key
+  domain: example.com
+sync:
+  managed_prefix: cf
+  default_nodeid: ctcc
+  max_records_per_node: 1
+  ping_threshold_ms: 1
+  ping_concurrency: 1
+  ping_packets: 1
+api:
+  bearer_token: secret
+state:
+  subscription_cache_file: "/data/custom-subscription-cache.json"
+subscription_sources:
+  refresh_interval: 20m
+  timeout: 12s
+  max_response_bytes: 3145728
+  max_lines: 1234
+  max_redirects: 3
+subscriptions:
+  - id: " main "
+    name: " mixed sources "
+    enabled: true
+    public_token: long-random-public-token
+    key: subscription-key
+    mode: merge
+    sources:
+      - id: " direct "
+        name: " direct source "
+        type: " SHARE "
+        enabled: true
+        share: " vless://uuid@old.example.com:443#direct "
+      - id: " upstream "
+        name: " remote source "
+        type: " REMOTE "
+        enabled: true
+        url: " https://upstream.example.com/sub "
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SUBSCRIPTION_SOURCE_TIMEOUT", "9s")
+	t.Setenv("SUBSCRIPTION_SOURCE_MAX_LINES", "4321")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.State.SubscriptionCacheFile != "/data/custom-subscription-cache.json" {
+		t.Fatalf("subscription cache file = %q", cfg.State.SubscriptionCacheFile)
+	}
+	settings := cfg.SubscriptionSources
+	if settings.RefreshInterval.Duration != 20*time.Minute || settings.Timeout.Duration != 9*time.Second || settings.MaxResponseBytes != 3145728 || settings.MaxLines != 4321 || settings.MaxRedirects != 3 {
+		t.Fatalf("subscription source settings = %#v", settings)
+	}
+	if len(cfg.Subscriptions) != 1 || len(cfg.Subscriptions[0].Sources) != 2 {
+		t.Fatalf("subscriptions = %#v", cfg.Subscriptions)
+	}
+	direct, remote := cfg.Subscriptions[0].Sources[0], cfg.Subscriptions[0].Sources[1]
+	if cfg.Subscriptions[0].ID != "main" || direct.ID != "direct" || direct.Type != "share" || direct.Share != "vless://uuid@old.example.com:443#direct" {
+		t.Fatalf("normalized direct source = %#v", direct)
+	}
+	if remote.ID != "upstream" || remote.Type != "remote" || remote.URL != "https://upstream.example.com/sub" {
+		t.Fatalf("normalized remote source = %#v", remote)
+	}
+}
+
 func TestRedactedHidesSubscriptionSecrets(t *testing.T) {
 	cfg := Config{
+		SubscriptionSources: SubscriptionSourceSettings{
+			RefreshInterval: Duration{Duration: 15 * time.Minute},
+			Timeout:         Duration{Duration: 10 * time.Second},
+		},
 		Subscriptions: []SubscriptionConfig{
 			{
 				Name:        "ctcc-main",
@@ -230,6 +309,10 @@ func TestRedactedHidesSubscriptionSecrets(t *testing.T) {
 				Format:      "base64",
 				NodeIDs:     []string{"ctcc"},
 				Shares:      []string{"vless://uuid@old.example.com:443#name"},
+				Sources: []SubscriptionSourceConfig{
+					{ID: "direct", Name: "direct", Type: "share", Enabled: true, Share: "vless://uuid@old.example.com:443#direct"},
+					{ID: "remote", Name: "remote", Type: "remote", Enabled: true, URL: "https://upstream.example.com/sub"},
+				},
 			},
 		},
 	}
@@ -243,10 +326,19 @@ func TestRedactedHidesSubscriptionSecrets(t *testing.T) {
 	if redacted.Subscriptions[0].Shares != nil {
 		t.Fatalf("shares were not redacted: %#v", redacted.Subscriptions[0])
 	}
+	if len(redacted.Subscriptions[0].Sources) != 2 || redacted.Subscriptions[0].Sources[0].Share != "" || redacted.Subscriptions[0].Sources[1].URL != "" {
+		t.Fatalf("subscription sources were not redacted: %#v", redacted.Subscriptions[0].Sources)
+	}
+	if redacted.Subscriptions[0].Sources[0].ID != "direct" || redacted.Subscriptions[0].Sources[1].Type != "remote" || !redacted.Subscriptions[0].Sources[1].Enabled {
+		t.Fatalf("source metadata was not preserved: %#v", redacted.Subscriptions[0].Sources)
+	}
+	if redacted.SubscriptionSources != cfg.SubscriptionSources {
+		t.Fatalf("remote source settings changed during redaction: got %#v want %#v", redacted.SubscriptionSources, cfg.SubscriptionSources)
+	}
 	if redacted.Subscriptions[0].Name != "ctcc-main" || redacted.Subscriptions[0].NodeIDs[0] != "ctcc" {
 		t.Fatalf("diagnostic fields were not preserved: %#v", redacted.Subscriptions[0])
 	}
-	if cfg.Subscriptions[0].PublicToken == "" || cfg.Subscriptions[0].Key == "" || cfg.Subscriptions[0].Shares == nil {
+	if cfg.Subscriptions[0].PublicToken == "" || cfg.Subscriptions[0].Key == "" || cfg.Subscriptions[0].Shares == nil || cfg.Subscriptions[0].Sources[0].Share == "" || cfg.Subscriptions[0].Sources[1].URL == "" {
 		t.Fatalf("redaction mutated original config: %#v", cfg.Subscriptions[0])
 	}
 }
@@ -350,6 +442,14 @@ func TestSpeedTestValidation(t *testing.T) {
 	cfg.Sync.SpeedTest.CandidatesPerNode = 1
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestValidateRejectsDuplicateSubscriptionIDs(t *testing.T) {
+	cfg := validConfig()
+	cfg.Subscriptions = []SubscriptionConfig{{ID: "main"}, {ID: "main"}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected duplicate subscription id validation error")
 	}
 }
 

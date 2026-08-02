@@ -3,16 +3,20 @@ package api
 import (
 	"bytes"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/config"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/provider"
+	"github.com/sleep/tencent-ddns-for-cf-ip/internal/state"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/subscription"
 	subscriptions "github.com/sleep/tencent-ddns-for-cf-ip/internal/subscriptions"
 	syncsvc "github.com/sleep/tencent-ddns-for-cf-ip/internal/sync"
@@ -81,9 +85,14 @@ func NewServer(cfg Config, service *syncsvc.Service, redacted config.Config) htt
 	mux.HandleFunc("GET /api/v1/config", s.withAuth(s.configHandler))
 	mux.HandleFunc("GET /api/v1/admin/subscriptions", s.withAuth(s.adminListSubscriptions))
 	mux.HandleFunc("POST /api/v1/admin/subscriptions", s.withAuth(s.adminCreateSubscription))
+	mux.HandleFunc("GET /api/v1/admin/subscriptions/{id}", s.withAuth(s.adminGetSubscription))
 	mux.HandleFunc("PUT /api/v1/admin/subscriptions/{id}", s.withAuth(s.adminUpdateSubscription))
 	mux.HandleFunc("DELETE /api/v1/admin/subscriptions/{id}", s.withAuth(s.adminDeleteSubscription))
 	mux.HandleFunc("POST /api/v1/admin/subscriptions/{id}/rotate-secret", s.withAuth(s.adminRotateSubscriptionSecret))
+	mux.HandleFunc("POST /api/v1/admin/subscriptions/{id}/restore", s.withAuth(s.adminRestoreSubscription))
+	mux.HandleFunc("POST /api/v1/admin/subscriptions/{id}/refresh-sources", s.withAuth(s.adminRefreshSubscriptionSources))
+	mux.HandleFunc("POST /api/v1/admin/subscriptions/{id}/preview", s.withAuth(s.adminPreviewSubscription))
+	mux.HandleFunc("POST /api/v1/admin/subscriptions/{id}/reveal-url", s.withAuth(s.adminRevealSubscriptionURL))
 	mux.HandleFunc("PUT /api/v1/admin/custom-ips/csv", s.withAuth(s.adminUpdateCustomCSV))
 	mux.HandleFunc("GET /api/v1/admin/speed-test-presets", s.withAuth(s.adminSpeedTestPresets))
 	mux.HandleFunc("POST /api/v1/admin/speed-tests", s.withAuth(s.adminRunTemporarySpeedTest))
@@ -131,6 +140,7 @@ func (s *Server) subscription(w http.ResponseWriter, r *http.Request) {
 		writeText(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+	w.Header().Set("Cache-Control", "private, no-store")
 	nodeIDs := sub.NodeIDs
 	if !isMergeSubscription(sub) {
 		var ok bool
@@ -166,7 +176,20 @@ func (s *Server) adminListSubscriptions(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"subscriptions": manager.List(requestBaseURL(r))})
+	items := manager.List(requestBaseURL(r))
+	var records []state.Record
+	if s.service != nil {
+		records = s.service.Records()
+	}
+	for i := range items {
+		if sub, exists := manager.ConfigForID(items[i].ID); exists {
+			items[i].OutputCount = generatedSubscriptionLineCount(sub, records)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"subscriptions":      items,
+		"override_conflicts": manager.OverrideConflicts(),
+	})
 }
 
 func (s *Server) adminCreateSubscription(w http.ResponseWriter, r *http.Request) {
@@ -184,6 +207,19 @@ func (s *Server) adminCreateSubscription(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusCreated, result)
+}
+
+func (s *Server) adminGetSubscription(w http.ResponseWriter, r *http.Request) {
+	manager, ok := s.requireSubscriptionManager(w)
+	if !ok {
+		return
+	}
+	item, err := manager.Get(r.PathValue("id"), requestBaseURL(r))
+	if err != nil {
+		writeSubscriptionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"item": item})
 }
 
 func (s *Server) adminUpdateSubscription(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +269,206 @@ func (s *Server) adminRotateSubscriptionSecret(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) adminRestoreSubscription(w http.ResponseWriter, r *http.Request) {
+	manager, ok := s.requireSubscriptionManager(w)
+	if !ok {
+		return
+	}
+	item, err := manager.Restore(r.PathValue("id"), requestBaseURL(r))
+	if err != nil {
+		writeSubscriptionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"item": item})
+}
+
+func (s *Server) adminRefreshSubscriptionSources(w http.ResponseWriter, r *http.Request) {
+	manager, ok := s.requireSubscriptionManager(w)
+	if !ok {
+		return
+	}
+	draft, err := optionalSubscriptionUpsertRequest(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	var item subscriptions.ListItem
+	if draft == nil {
+		item, err = manager.RefreshSources(r.Context(), r.PathValue("id"), requestBaseURL(r))
+	} else {
+		item, err = manager.RefreshDraftSources(r.Context(), r.PathValue("id"), draft, requestBaseURL(r))
+	}
+	if err != nil {
+		writeSubscriptionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"item": item})
+}
+
+type subscriptionPreviewEntry struct {
+	Protocol string `json:"protocol"`
+	Outcome  string `json:"outcome"`
+}
+
+type subscriptionPreviewResponse struct {
+	ResolvedCount    int                        `json:"resolved_count"`
+	OutputCount      int                        `json:"output_count"`
+	RewrittenCount   int                        `json:"rewritten_count"`
+	PassthroughCount int                        `json:"passthrough_count"`
+	Warnings         []string                   `json:"warnings,omitempty"`
+	Entries          []subscriptionPreviewEntry `json:"entries"`
+}
+
+func (s *Server) adminPreviewSubscription(w http.ResponseWriter, r *http.Request) {
+	manager, ok := s.requireSubscriptionManager(w)
+	if !ok {
+		return
+	}
+	draft, err := optionalSubscriptionUpsertRequest(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	sub, err := manager.ResolveDraft(r.Context(), r.PathValue("id"), draft, draft != nil)
+	if err != nil {
+		writeSubscriptionError(w, err)
+		return
+	}
+	nodeIDs := sub.NodeIDs
+	if isMergeSubscription(sub) {
+		nodeIDs = nil
+	}
+	var records []state.Record
+	if s.service != nil {
+		records = s.service.Records()
+	}
+	body, err := subscription.Generate(subscription.Config{
+		Shares: sub.Shares, Format: sub.Format, NodeIDs: nodeIDs, Mode: sub.Mode,
+	}, records)
+	if err != nil {
+		if errors.Is(err, subscription.ErrNoTargets) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+			return
+		}
+		if errors.Is(err, subscription.ErrNoValidShares) {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	decoded, err := base64.StdEncoding.DecodeString(body)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "decode generated preview: " + err.Error()})
+		return
+	}
+	response := subscriptionPreviewResponse{ResolvedCount: len(sub.Shares)}
+	response.OutputCount = len(nonEmptySubscriptionLines(string(decoded)))
+	warningProtocols := map[string]int{}
+	for _, share := range sub.Shares {
+		protocol := subscriptionProtocol(share)
+		outcome := "passthrough"
+		if !isMergeSubscription(sub) && supportedSubscriptionProtocol(protocol) {
+			outcome = "rewritten"
+			response.RewrittenCount++
+		} else {
+			response.PassthroughCount++
+			if !isMergeSubscription(sub) {
+				warningProtocols[protocol]++
+			}
+		}
+		if len(response.Entries) < 50 {
+			response.Entries = append(response.Entries, subscriptionPreviewEntry{Protocol: protocol, Outcome: outcome})
+		}
+	}
+	warningProtocolNames := make([]string, 0, len(warningProtocols))
+	for protocol := range warningProtocols {
+		warningProtocolNames = append(warningProtocolNames, protocol)
+	}
+	sort.Strings(warningProtocolNames)
+	for _, protocol := range warningProtocolNames {
+		count := warningProtocols[protocol]
+		response.Warnings = append(response.Warnings, fmt.Sprintf("协议 %s 有 %d 条未识别内容，已原样保留", protocol, count))
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func optionalSubscriptionUpsertRequest(r *http.Request) (*subscriptions.UpsertRequest, error) {
+	if r.Body == nil {
+		return nil, nil
+	}
+	defer r.Body.Close()
+	var req subscriptions.UpsertRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if errors.Is(err, io.EOF) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &req, nil
+}
+
+func (s *Server) adminRevealSubscriptionURL(w http.ResponseWriter, r *http.Request) {
+	manager, ok := s.requireSubscriptionManager(w)
+	if !ok {
+		return
+	}
+	fullURL, err := manager.SecretURL(r.PathValue("id"), requestBaseURL(r))
+	if err != nil {
+		writeSubscriptionError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	writeJSON(w, http.StatusOK, map[string]string{"url": fullURL})
+}
+
+func nonEmptySubscriptionLines(value string) []string {
+	lines := make([]string, 0)
+	for _, line := range strings.Split(value, "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+func generatedSubscriptionLineCount(sub config.SubscriptionConfig, records []state.Record) int {
+	nodeIDs := sub.NodeIDs
+	if isMergeSubscription(sub) {
+		nodeIDs = nil
+	}
+	body, err := subscription.Generate(subscription.Config{
+		Shares: sub.Shares, Format: sub.Format, NodeIDs: nodeIDs, Mode: sub.Mode,
+	}, records)
+	if err != nil {
+		return 0
+	}
+	decoded, err := base64.StdEncoding.DecodeString(body)
+	if err != nil {
+		return 0
+	}
+	return len(nonEmptySubscriptionLines(string(decoded)))
+}
+
+func subscriptionProtocol(share string) string {
+	protocol, _, ok := strings.Cut(strings.TrimSpace(share), "://")
+	if !ok || strings.TrimSpace(protocol) == "" {
+		return "unknown"
+	}
+	return strings.ToLower(strings.TrimSpace(protocol))
+}
+
+func supportedSubscriptionProtocol(protocol string) bool {
+	switch protocol {
+	case "vmess", "vless", "trojan", "ss", "hysteria", "hysteria2":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) adminUpdateCustomCSV(w http.ResponseWriter, r *http.Request) {

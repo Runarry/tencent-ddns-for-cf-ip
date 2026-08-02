@@ -41,7 +41,7 @@
         <section class="content">
           <header class="topbar">
             <div>
-              <p id="syncState" class="eyebrow">状态读取中</p>
+              <p id="syncState" class="eyebrow" aria-live="polite">状态读取中</p>
               <h2 id="pageTitle">总览</h2>
             </div>
             <div class="actions">
@@ -60,11 +60,40 @@
             <div id="recentRecords" class="list"></div>
           </section>
 
-          <section id="subscriptionsPanel" class="panel">
+          <section id="subscriptionsPanel" class="panel" aria-labelledby="subscriptionsHeading">
             <div class="section-head">
-              <h3>订阅</h3>
+              <div>
+                <h3 id="subscriptionsHeading">订阅管理</h3>
+                <p class="section-copy">管理直连分享和远程订阅源，并检查每次解析的健康状态。</p>
+              </div>
               <button id="newSubscriptionButton" class="primary" type="button">新增</button>
             </div>
+            <div class="subscription-toolbar" aria-label="订阅筛选">
+              <label class="search-field">
+                <span>搜索</span>
+                <input id="subscriptionSearch" type="search" placeholder="名称、ID 或线路" autocomplete="off" />
+              </label>
+              <label>
+                <span>生成类型</span>
+                <select id="subscriptionModeFilter">
+                  <option value="all">全部类型</option>
+                  <option value="rewrite">优选改写</option>
+                  <option value="merge">原地址直返</option>
+                </select>
+              </label>
+              <label>
+                <span>健康状态</span>
+                <select id="subscriptionHealthFilter">
+                  <option value="all">全部状态</option>
+                  <option value="healthy">健康</option>
+                  <option value="degraded">部分异常</option>
+                  <option value="unhealthy">异常</option>
+                  <option value="disabled">已停用</option>
+                </select>
+              </label>
+            </div>
+            <div id="subscriptionConflictBanner" class="callout" role="alert" hidden></div>
+            <p id="subscriptionResultCount" class="result-count" aria-live="polite"></p>
             <div id="subscriptionList" class="list"></div>
           </section>
 
@@ -103,7 +132,7 @@
                 <input id="speedTestUrl" type="url" placeholder="https://speed.cloudflare.com/__down?bytes=10485760" />
               </label>
             </div>
-            <p id="speedTestStatus" class="secret"></p>
+            <p id="speedTestStatus" class="secret" role="status" aria-live="polite"></p>
             <div id="temporarySpeedWrap" class="table-wrap" hidden>
               <table>
                 <thead>
@@ -142,7 +171,7 @@
         </section>
       </section>
 
-      <dialog id="subscriptionDialog">
+      <dialog id="subscriptionDialog" aria-labelledby="dialogTitle">
         <form id="subscriptionForm" method="dialog" class="dialog-form">
           <header>
             <h3 id="dialogTitle">订阅</h3>
@@ -169,28 +198,56 @@
             <span>生成方式</span>
             <select id="subscriptionMode">
               <option value="rewrite">优选改写</option>
-              <option value="merge">只合并</option>
+              <option value="merge">原地址直返</option>
             </select>
+            <small id="subscriptionModeHint" class="field-hint"></small>
           </label>
           <label id="subscriptionNodeidsLabel">
             <span>线路</span>
             <input id="subscriptionNodeids" type="text" placeholder="ctcc,bgp,cucc" />
           </label>
-          <label>
-            <span>分享字符串</span>
-            <textarea id="subscriptionShares" rows="8" spellcheck="false"></textarea>
-          </label>
-          <p id="dialogSecret" class="secret"></p>
+          <section class="source-section" aria-labelledby="sourcesHeading">
+            <div class="source-heading">
+              <div>
+                <h4 id="sourcesHeading">订阅来源</h4>
+                <p>按顺序合并启用的来源。直连来源填写一个分享字符串，远程来源填写订阅 URL。</p>
+              </div>
+              <div class="actions">
+                <button id="addShareSourceButton" class="secondary" type="button">＋ 直连分享</button>
+                <button id="addRemoteSourceButton" class="secondary" type="button">＋ 远程订阅</button>
+              </div>
+            </div>
+            <div id="sourceEditor" class="source-editor"></div>
+          </section>
+          <p id="configOverrideHint" class="callout" hidden></p>
+          <p id="dialogSecret" class="secret" role="status" aria-live="polite"></p>
           <menu>
             <button class="secondary" value="cancel" type="submit">取消</button>
             <button id="deleteSubscriptionButton" class="danger" type="button">删除</button>
+            <button id="restoreSubscriptionButton" class="secondary" type="button">恢复 YAML</button>
             <button id="rotateKeyButton" class="secondary" type="button">轮换 Key</button>
+            <button id="refreshSourcesButton" class="secondary" type="button">刷新远程源</button>
+            <button id="previewSubscriptionButton" class="secondary" type="button">预览</button>
             <button id="saveSubscriptionButton" class="primary" type="button">保存</button>
           </menu>
         </form>
       </dialog>
 
-      <div id="toast" class="toast" hidden></div>
+      <dialog id="previewDialog" class="preview-dialog" aria-labelledby="previewDialogTitle">
+        <section class="dialog-form">
+          <header>
+            <div>
+              <p class="eyebrow">生成结果</p>
+              <h3 id="previewDialogTitle">订阅预览</h3>
+            </div>
+            <button id="closePreviewButton" class="icon" type="button" aria-label="关闭预览">×</button>
+          </header>
+          <p id="previewSummary" class="section-copy"></p>
+          <pre id="previewContent" class="preview-content" tabindex="0"></pre>
+        </section>
+      </dialog>
+
+      <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
     </main>
     <script src="/app.js" type="module"></script>
   </body>

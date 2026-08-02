@@ -60,17 +60,39 @@ subscriptions:
   # mode 为 rewrite 时使用优选域名改写分享；mode 为 merge 时只合并分享，不使用优选。
   # nodeids 为空时使用全部优选域名；填写后只使用匹配线路的优选域名。
   # 请求可追加 nodeids=ctcc,bgp 动态收窄线路范围。
-  - name: "ctcc-main"
+  - id: "ctcc-main"
+    name: "ctcc-main"
     enabled: false
     public_token: "replace-with-a-long-random-subscription-token"
     key: "replace-with-a-long-random-subscription-key"
     format: "base64"
     mode: "rewrite"
     nodeids: ["ctcc"]
-    # 支持 vmess/vless/trojan/ss/hysteria/hysteria2 分享字符串；只会替换实际连接地址。
-    shares: []
+    # mode 属于整个订阅；sources 可混合直接分享和 HTTP(S) 远程订阅。
+    sources:
+      - id: "direct-main"
+        name: "直接分享"
+        type: "share"
+        enabled: true
+        share: "vless://replace-with-uuid@origin.example.com:443?security=tls#example"
+      - id: "remote-main"
+        name: "远程订阅"
+        type: "remote"
+        enabled: true
+        url: "https://subscription.example.com/list"
+    # 旧 shares: [] 格式仍然兼容；新配置建议使用 sources。
+
+subscription_sources:
+  # 远程源响应可为 Base64 或 UTF-8 明文，均按非空行导入。
+  refresh_interval: "15m"
+  timeout: "10s"
+  max_response_bytes: 2097152
+  max_lines: 10000
+  max_redirects: 5
 
 state:
   state_file: "/data/state.json"
-  # Runtime-editable subscriptions managed by the Cloudflare Pages/Workers admin tool.
+  # 运行时订阅和静态 YAML 订阅的 Web 编辑覆盖层。
   subscriptions_file: "/data/subscriptions.json"
+  # 远程订阅源最后一次成功内容；刷新失败时继续使用。
+  subscription_cache_file: "/data/subscription-cache.json"

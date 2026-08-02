@@ -53,3 +53,16 @@ npx wrangler pages deploy public --project-name tencent-ddns-admin
 
 After changing dashboard variables or secrets, redeploy the Pages project so Functions
 receive the updated bindings.
+
+## Subscription Proxy
+
+Pages Functions proxy `/sub/*` to the Go backend with the original path and
+query string, so subscription clients can use the Pages domain. These requests
+do not require an admin session, but the backend still validates the
+subscription `key`.
+
+The subscription list exposes only a redacted URL template. Use **Show full
+URL** when the complete secret-bearing link is needed. Editing a subscription
+defined in `config.yaml` writes an override to `/data/subscriptions.json`
+instead of changing YAML; **Restore YAML** removes that override. Remote sources
+can also be refreshed manually from the subscription UI.

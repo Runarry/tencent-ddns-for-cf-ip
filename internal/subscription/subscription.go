@@ -50,13 +50,16 @@ func Generate(cfg Config, records []state.Record) (string, error) {
 		if share == "" {
 			continue
 		}
+		rewrittenShares := make([]string, 0, len(targets))
 		for _, target := range targets {
 			rewritten, err := rewriteShareForTarget(share, target)
 			if err != nil {
-				continue
+				rewrittenShares = []string{share}
+				break
 			}
-			lines = append(lines, rewritten)
+			rewrittenShares = append(rewrittenShares, rewritten)
 		}
+		lines = append(lines, rewrittenShares...)
 	}
 	if len(lines) == 0 {
 		return "", ErrNoValidShares

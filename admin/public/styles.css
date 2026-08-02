@@ -9,6 +9,9 @@
   --accent: #176b5b;
   --accent-strong: #0d4f43;
   --danger: #b3261e;
+  --success: #16734b;
+  --warning: #9a5d00;
+  --focus: #246bfd;
   --shadow: 0 16px 40px rgba(22, 32, 38, 0.12);
 }
 
@@ -23,6 +26,9 @@
     --accent: #4cc3a7;
     --accent-strong: #80dbc8;
     --danger: #ffb4ab;
+    --success: #5bd39b;
+    --warning: #ffc56b;
+    --focus: #8db2ff;
     --shadow: 0 16px 44px rgba(0, 0, 0, 0.34);
   }
 }
@@ -62,8 +68,17 @@ button {
 }
 
 button:disabled {
-  cursor: wait;
+  cursor: not-allowed;
   opacity: 0.65;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--focus), transparent 35%);
+  outline-offset: 2px;
 }
 
 .primary {
@@ -138,6 +153,7 @@ button:disabled {
 h1,
 h2,
 h3,
+h4,
 p {
   margin-top: 0;
 }
@@ -155,6 +171,11 @@ h2 {
 h3 {
   margin-bottom: 0;
   font-size: 18px;
+}
+
+h4 {
+  margin-bottom: 0;
+  font-size: 15px;
 }
 
 .tabs {
@@ -193,6 +214,29 @@ h3 {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.section-copy,
+.result-count {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.subscription-toolbar {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(160px, 220px) minmax(160px, 220px);
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.result-count {
+  min-height: 20px;
+  margin: 0 0 10px;
 }
 
 .panel {
@@ -261,6 +305,144 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.title-line,
+.card-footer,
+.source-card-head,
+.source-meta,
+.revealed-url {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.title-line {
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.mode-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border-radius: 5px;
+  padding: 2px 7px;
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent), transparent 87%);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.mode-merge {
+  color: var(--muted);
+  background: var(--surface-2);
+}
+
+.health-badge {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  border-radius: 999px;
+  padding: 3px 9px;
+  color: var(--muted);
+  background: var(--surface-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.health-badge > span:first-child {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.health-healthy {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success), transparent 88%);
+}
+
+.health-degraded {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning), transparent 88%);
+}
+
+.health-unhealthy {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger), transparent 89%);
+}
+
+.health-disabled {
+  color: var(--muted);
+}
+
+.subscription-card {
+  gap: 14px;
+  padding: 17px;
+}
+
+.subscription-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--line);
+}
+
+.subscription-stats > div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 11px 12px;
+  background: var(--surface);
+}
+
+.subscription-stats span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.subscription-stats strong {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.card-footer {
+  justify-content: space-between;
+}
+
+.revealed-url {
+  justify-content: space-between;
+  padding: 9px 11px;
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.revealed-url .mono {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.text-button {
+  min-height: 28px;
+  border: 0;
+  padding: 0 4px;
+  color: var(--accent-strong);
+  background: transparent;
+}
+
+.subtle-primary {
+  min-width: 66px;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -321,6 +503,11 @@ label {
   font-size: 13px;
 }
 
+.field-hint {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 input,
 select,
 textarea {
@@ -346,7 +533,9 @@ textarea {
 }
 
 dialog {
-  width: min(760px, calc(100vw - 28px));
+  width: min(920px, calc(100vw - 28px));
+  max-height: calc(100vh - 28px);
+  overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 0;
@@ -363,6 +552,129 @@ dialog::backdrop {
   display: grid;
   gap: 14px;
   padding: 20px;
+}
+
+.source-section {
+  display: grid;
+  gap: 12px;
+  margin-top: 4px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.source-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.source-heading p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.source-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.source-card {
+  display: grid;
+  gap: 11px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-2), transparent 45%);
+}
+
+.source-disabled {
+  opacity: 0.72;
+}
+
+.source-card-head {
+  min-height: 30px;
+}
+
+.source-index {
+  display: grid;
+  flex: none;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--muted);
+  background: var(--surface-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.source-toggle {
+  margin-left: auto;
+}
+
+.source-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.compact-icon {
+  width: 30px;
+  min-height: 30px;
+  font-size: 16px;
+}
+
+.source-meta {
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.source-error {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--danger);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-empty {
+  display: grid;
+  gap: 5px;
+  padding: 24px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.callout {
+  margin: 0;
+  border-left: 3px solid var(--warning);
+  padding: 10px 12px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--warning), transparent 92%);
+  font-size: 13px;
+}
+
+.preview-dialog {
+  width: min(900px, calc(100vw - 28px));
+}
+
+.preview-content {
+  min-height: 240px;
+  max-height: min(60vh, 680px);
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  color: var(--text);
+  background: var(--bg);
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .dialog-form header,
@@ -434,6 +746,17 @@ dialog::backdrop {
     grid-template-columns: 1fr;
   }
 
+  .subscription-toolbar,
+  .subscription-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .card-footer,
+  .source-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -449,5 +772,27 @@ dialog::backdrop {
   .dialog-form menu {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .subscription-toolbar,
+  .subscription-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .subscription-card .item-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .source-card-head {
+    flex-wrap: wrap;
+  }
+
+  .source-toggle {
+    margin-left: 0;
+  }
+
+  .source-actions {
+    margin-left: auto;
   }
 }

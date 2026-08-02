@@ -15,6 +15,7 @@ import (
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/dnspod"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/ping"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/provider"
+	"github.com/sleep/tencent-ddns-for-cf-ip/internal/remotesource"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/speedtest"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/state"
 	"github.com/sleep/tencent-ddns-for-cf-ip/internal/subscriptions"
@@ -45,6 +46,22 @@ func main() {
 		logger.Error("load subscriptions", "error", err)
 		os.Exit(1)
 	}
+	remoteFetcher, err := remotesource.New(
+		remotesource.WithTimeout(cfg.SubscriptionSources.Timeout.Duration),
+		remotesource.WithMaxBytes(cfg.SubscriptionSources.MaxResponseBytes),
+		remotesource.WithMaxLines(cfg.SubscriptionSources.MaxLines),
+		remotesource.WithMaxRedirects(cfg.SubscriptionSources.MaxRedirects),
+	)
+	if err != nil {
+		logger.Error("configure remote subscription sources", "error", err)
+		os.Exit(1)
+	}
+	remoteCache, err := subscriptions.NewRemoteCache(cfg.State.SubscriptionCacheFile, remoteFetcher)
+	if err != nil {
+		logger.Error("load remote subscription cache", "error", err)
+		os.Exit(1)
+	}
+	subscriptionManager.SetSourceResolver(remoteCache)
 
 	providerClient := provider.NewClient(provider.Config{
 		Source:      cfg.Provider.Source,
@@ -139,6 +156,19 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go func() {
+		subscriptionManager.RefreshAllSources(ctx)
+		ticker := time.NewTicker(cfg.SubscriptionSources.RefreshInterval.Duration)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				subscriptionManager.RefreshAllSources(ctx)
+			}
+		}
+	}()
 
 	service.Start(ctx)
 

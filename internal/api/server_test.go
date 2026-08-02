@@ -354,6 +354,9 @@ func TestPublicSubscriptionEndpoint(t *testing.T) {
 	if got := rr.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/plain") {
 		t.Fatalf("content-type = %q", got)
 	}
+	if got := rr.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("cache-control = %q", got)
+	}
 	decoded, err := base64.StdEncoding.DecodeString(rr.Body.String())
 	if err != nil {
 		t.Fatal(err)
@@ -711,6 +714,160 @@ func TestAdminRotateSecretReturnsNewKeyOnce(t *testing.T) {
 	}
 	if strings.Contains(rr.Body.String(), rotated.Key) {
 		t.Fatalf("list leaked rotated key: %s", rr.Body.String())
+	}
+}
+
+type apiSubscriptionSourceResolver struct {
+	resolution subscriptions.SourceResolution
+	refreshes  []string
+}
+
+func (r *apiSubscriptionSourceResolver) ResolveCached(string, config.SubscriptionSourceConfig) subscriptions.SourceResolution {
+	return r.resolution
+}
+
+func (r *apiSubscriptionSourceResolver) Refresh(_ context.Context, cacheKey string, _ config.SubscriptionSourceConfig) subscriptions.SourceResolution {
+	r.refreshes = append(r.refreshes, cacheKey)
+	return r.resolution
+}
+
+func TestAdminSubscriptionDetailRefreshPreviewRevealAndRestore(t *testing.T) {
+	store := subscriptions.NewStore(filepath.Join(t.TempDir(), "subscriptions.json"))
+	static := []config.SubscriptionConfig{{
+		ID:          "main",
+		Name:        "from-config",
+		Enabled:     true,
+		PublicToken: "config-random-public-token",
+		Key:         "config-key",
+		Format:      "base64",
+		Mode:        "rewrite",
+		NodeIDs:     []string{"ctcc"},
+		Sources: []config.SubscriptionSourceConfig{
+			{ID: "direct", Name: "direct", Type: "share", Enabled: true, Share: "vless://uuid@old.example.com:443#direct"},
+			{ID: "upstream", Name: "remote", Type: "remote", Enabled: true, URL: "https://upstream.example.com/sub"},
+		},
+	}}
+	manager, err := subscriptions.NewManager(static, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetchedAt := time.Now().UTC().Truncate(time.Second)
+	resolver := &apiSubscriptionSourceResolver{resolution: subscriptions.SourceResolution{
+		Lines: []string{"trojan://pass@old.example.com:443#remote"},
+		Status: subscriptions.SourceStatus{
+			State: "healthy", LastSuccessAt: &fetchedAt, ResolvedCount: 1, Encoding: "plain", HasCache: true,
+		},
+	}}
+	manager.SetSourceResolver(resolver)
+	initial := state.State{Records: []state.Record{{
+		Name: "cf-ctcc-01.cdn", FQDN: "cf-ctcc-01.cdn.example.com", NodeID: "ctcc", LatencyMS: 20,
+	}}}
+	service := syncsvc.NewService(syncsvc.Config{}, fakeProvider{}, fakePinger{}, nil, fakeDNS{}, fakeStore{}, initial, slog.Default())
+	handler := NewServer(Config{Token: "secret", SubscriptionManager: manager}, service, config.Config{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/subscriptions/config:main", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("detail code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var detail struct {
+		Item subscriptions.ListItem `json:"item"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Item.ID != "config:main" || detail.Item.Overridden || detail.Item.SourceCount != 2 || len(detail.Item.Sources) != 2 {
+		t.Fatalf("detail item = %#v", detail.Item)
+	}
+	if detail.Item.Sources[1].URL != "https://upstream.example.com/sub" || detail.Item.Sources[1].Status != "healthy" || detail.Item.Sources[1].ResolvedCount != 1 {
+		t.Fatalf("remote source detail = %#v", detail.Item.Sources[1])
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/subscriptions/config:main/refresh-sources", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("refresh code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if len(resolver.refreshes) != 1 || resolver.refreshes[0] != "config:main/upstream" {
+		t.Fatalf("refresh calls = %#v", resolver.refreshes)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/subscriptions/config:main/preview", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("preview code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var preview subscriptionPreviewResponse
+	if err := json.NewDecoder(rr.Body).Decode(&preview); err != nil {
+		t.Fatal(err)
+	}
+	if preview.ResolvedCount != 2 || preview.OutputCount != 2 || preview.RewrittenCount != 2 || preview.PassthroughCount != 0 || len(preview.Entries) != 2 {
+		t.Fatalf("preview = %#v", preview)
+	}
+	if preview.Entries[0].Protocol != "vless" || preview.Entries[0].Outcome != "rewritten" || preview.Entries[1].Protocol != "trojan" {
+		t.Fatalf("preview entries = %#v", preview.Entries)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/subscriptions/config:main/reveal-url", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("reveal code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Cache-Control") != "no-store" || rr.Header().Get("Pragma") != "no-cache" {
+		t.Fatalf("reveal cache headers = %#v", rr.Header())
+	}
+	var revealed map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&revealed); err != nil {
+		t.Fatal(err)
+	}
+	if revealed["url"] != "http://example.com/sub/config-random-public-token?key=config-key" {
+		t.Fatalf("revealed URL = %q", revealed["url"])
+	}
+
+	if _, err := manager.Update("config:main", subscriptions.UpsertRequest{
+		Name:        "runtime-override",
+		Enabled:     true,
+		PublicToken: "config-random-public-token",
+		Key:         "config-key",
+		Format:      "base64",
+		Mode:        "merge",
+		Sources: []config.SubscriptionSourceConfig{{
+			ID: "direct", Type: "share", Enabled: true, Share: "vless://uuid@origin.example.com:443#override",
+		}},
+	}, "http://example.com"); err != nil {
+		t.Fatal(err)
+	}
+	overridden, err := manager.Get("config:main", "http://example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !overridden.Overridden || overridden.Name != "runtime-override" {
+		t.Fatalf("override setup = %#v", overridden)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/subscriptions/config:main/restore", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("restore code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var restored struct {
+		Item subscriptions.ListItem `json:"item"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.Item.Overridden || restored.Item.Name != "from-config" || restored.Item.Mode != "rewrite" || restored.Item.SourceCount != 2 {
+		t.Fatalf("restored API item = %#v", restored.Item)
 	}
 }
 

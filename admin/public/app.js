@@ -9,9 +9,13 @@ const state = {
   status: null,
   records: [],
   subscriptions: [],
+  subscriptionConflicts: [],
   speedPresets: defaultSpeedPresets,
   temporarySpeedTest: null,
   activeTab: "overview",
+  editingSubscription: null,
+  editingSources: [],
+  revealedURLs: new Map(),
 };
 
 const $ = (id) => document.getElementById(id);
@@ -36,7 +40,9 @@ async function api(path, options = {}) {
     } catch {
       message = await response.text();
     }
-    throw new Error(message || `HTTP ${response.status}`);
+    const error = new Error(message || `HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
   }
   if (response.status === 204) {
     return null;
@@ -83,7 +89,20 @@ function bindEvents() {
   $("saveSubscriptionButton").addEventListener("click", saveSubscription);
   $("deleteSubscriptionButton").addEventListener("click", deleteSubscription);
   $("rotateKeyButton").addEventListener("click", rotateKey);
+  $("restoreSubscriptionButton").addEventListener("click", restoreSubscription);
+  $("refreshSourcesButton").addEventListener("click", () => refreshSubscriptionSources($("subscriptionId").value));
+  $("previewSubscriptionButton").addEventListener("click", () => previewSubscription($("subscriptionId").value, true));
+  $("addShareSourceButton").addEventListener("click", () => addSource("share"));
+  $("addRemoteSourceButton").addEventListener("click", () => addSource("remote"));
+  $("sourceEditor").addEventListener("input", updateSourceFromInput);
+  $("sourceEditor").addEventListener("change", updateSourceFromInput);
+  $("sourceEditor").addEventListener("click", handleSourceAction);
   $("subscriptionMode").addEventListener("change", updateSubscriptionModeUI);
+  $("subscriptionSearch").addEventListener("input", renderSubscriptions);
+  $("subscriptionModeFilter").addEventListener("change", renderSubscriptions);
+  $("subscriptionHealthFilter").addEventListener("change", renderSubscriptions);
+  $("subscriptionList").addEventListener("click", handleSubscriptionAction);
+  $("closePreviewButton").addEventListener("click", () => $("previewDialog").close());
   $("runSpeedTestButton").addEventListener("click", runTemporarySpeedTest);
   $("applySpeedTestButton").addEventListener("click", () => applyTemporarySpeedTest());
   $("speedPresetSelect").addEventListener("change", () => {
@@ -120,6 +139,7 @@ async function refreshAll() {
     state.status = status;
     state.records = records.records || [];
     state.subscriptions = subscriptions.subscriptions || [];
+    state.subscriptionConflicts = subscriptions.override_conflicts || [];
     state.speedPresets = speedPresets.presets?.length ? speedPresets.presets : defaultSpeedPresets;
     render();
   } catch (error) {
@@ -169,38 +189,89 @@ function renderRecentRecords() {
 }
 
 function renderSubscriptions() {
-  $("subscriptionList").innerHTML =
-    state.subscriptions
-      .map((sub) => `
-        <article class="item">
-          <div class="item-head">
-            <div class="item-title">
-              <strong>${escapeHTML(sub.name || "未命名订阅")}</strong>
-              <div class="mono">${escapeHTML(sub.url_template || "")}</div>
-            </div>
-            <span class="badge">${sub.enabled ? "启用" : "停用"} · ${sub.editable ? "可编辑" : "配置只读"}</span>
-          </div>
-          <small>${escapeHTML(modeLabel(sub.mode))} · ${escapeHTML(subscriptionLineLabel(sub))} · ${sub.share_count || 0} 条分享</small>
-          <div class="actions">
-            <button class="secondary" type="button" data-copy="${escapeAttr(sub.url_template || "")}">复制地址</button>
-            <button class="secondary" type="button" data-edit="${escapeAttr(sub.id)}" ${sub.editable ? "" : "disabled"}>编辑</button>
-          </div>
-        </article>
-      `)
-      .join("") || empty("暂无订阅");
+  renderSubscriptionConflicts();
+  const search = $("subscriptionSearch").value.trim().toLocaleLowerCase();
+  const mode = $("subscriptionModeFilter").value;
+  const health = $("subscriptionHealthFilter").value;
+  const subscriptions = state.subscriptions.filter((sub) => {
+    const haystack = [sub.name, sub.id, ...(sub.nodeids || [])].filter(Boolean).join(" ").toLocaleLowerCase();
+    return (!search || haystack.includes(search)) &&
+      (mode === "all" || normalizedMode(sub) === mode) &&
+      (health === "all" || subscriptionHealth(sub).value === health);
+  });
 
-  $("subscriptionList").querySelectorAll("[data-edit]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const sub = state.subscriptions.find((item) => item.id === button.dataset.edit);
-      openSubscriptionDialog(sub);
-    });
-  });
-  $("subscriptionList").querySelectorAll("[data-copy]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      await navigator.clipboard.writeText(button.dataset.copy);
-      notify("已复制");
-    });
-  });
+  $("subscriptionResultCount").textContent = `显示 ${subscriptions.length} / ${state.subscriptions.length} 个订阅`;
+  $("subscriptionList").innerHTML = subscriptions.map(subscriptionCard).join("") || empty("没有符合筛选条件的订阅");
+}
+
+function renderSubscriptionConflicts() {
+  const banner = $("subscriptionConflictBanner");
+  const conflicts = state.subscriptionConflicts || [];
+  banner.hidden = conflicts.length === 0;
+  banner.innerHTML = conflicts.length
+    ? `<strong>有 ${conflicts.length} 个 YAML 覆盖未应用</strong><ul>${conflicts.map((item) =>
+        `<li><code>${escapeHTML(item.id || "未知 ID")}</code>：${escapeHTML(item.reason || "配置冲突")}</li>`
+      ).join("")}</ul><span>请为 YAML 订阅设置稳定且唯一的 id，然后重新编辑并保存。</span>`
+    : "";
+}
+
+function subscriptionCard(sub) {
+  const sources = normalizeSources(sub);
+  const directCount = firstNumber(sub.direct_source_count, sub.direct_count, sub.share_source_count, sub.source_counts?.share, sources.filter((source) => source.type === "share").length);
+  const remoteCount = firstNumber(sub.remote_source_count, sub.remote_count, sub.source_counts?.remote, sources.filter((source) => source.type === "remote").length);
+  const resolvedCount = firstNumber(sub.resolved_count, sub.parsed_count, sub.parse_count, sumField(sources, "resolved_count"), sub.share_count);
+  const outputCount = firstNumber(sub.output_count, sub.generated_count, sub.share_count);
+  const status = subscriptionHealth(sub);
+  const refreshedAt = sub.last_refreshed_at || sub.last_refresh_at || sub.refreshed_at || latestDate(sources.map((source) => source.last_success_at));
+  const override = overrideLabel(sub);
+  const revealedURL = state.revealedURLs.get(String(sub.id));
+  return `
+    <article class="item subscription-card">
+      <div class="item-head">
+        <div class="item-title">
+          <div class="title-line">
+            <strong>${escapeHTML(sub.name || "未命名订阅")}</strong>
+            <span class="mode-chip mode-${escapeAttr(normalizedMode(sub))}">${escapeHTML(modeLabel(normalizedMode(sub)))}</span>
+          </div>
+          <small class="mono">${escapeHTML(sub.id || "-")}</small>
+        </div>
+        <span class="health-badge health-${escapeAttr(status.value)}"><span aria-hidden="true"></span>${escapeHTML(status.label)}</span>
+      </div>
+      <div class="subscription-stats">
+        <div><span>来源</span><strong>${directCount} 直连 / ${remoteCount} 远程</strong></div>
+        <div><span>解析 / 输出</span><strong>${formatCount(resolvedCount)} / ${formatCount(outputCount)}</strong></div>
+        <div><span>最近刷新</span><strong>${escapeHTML(formatDate(refreshedAt))}</strong></div>
+        <div><span>配置状态</span><strong>${escapeHTML(override)}</strong></div>
+      </div>
+      ${revealedURL ? `<div class="revealed-url"><span class="mono">${escapeHTML(revealedURL)}</span><button class="text-button" type="button" data-action="copy-url" data-id="${escapeAttr(sub.id)}">复制</button></div>` : ""}
+      <div class="card-footer">
+        <small>${escapeHTML(subscriptionLineLabel(sub))}</small>
+        <div class="actions">
+          <button class="secondary" type="button" data-action="reveal-url" data-id="${escapeAttr(sub.id)}">${revealedURL ? "隐藏地址" : "显示完整 URL"}</button>
+          ${remoteCount ? `<button class="secondary" type="button" data-action="refresh-sources" data-id="${escapeAttr(sub.id)}">刷新远程源</button>` : ""}
+          <button class="secondary" type="button" data-action="preview" data-id="${escapeAttr(sub.id)}">预览</button>
+          <button class="primary subtle-primary" type="button" data-action="edit" data-id="${escapeAttr(sub.id)}">编辑</button>
+        </div>
+      </div>
+    </article>`;
+}
+
+async function handleSubscriptionAction(event) {
+  const button = event.target.closest("button[data-action]");
+  if (!button) {
+    return;
+  }
+  const id = button.dataset.id;
+  const sub = state.subscriptions.find((item) => String(item.id) === id);
+  try {
+    if (button.dataset.action === "edit") await openSubscriptionDialog(sub);
+    if (button.dataset.action === "preview") await previewSubscription(id);
+    if (button.dataset.action === "refresh-sources") await refreshSubscriptionSources(id);
+    if (button.dataset.action === "reveal-url") await revealSubscriptionURL(sub);
+    if (button.dataset.action === "copy-url") await copyText(state.revealedURLs.get(id));
+  } catch (error) {
+    notify(error.message);
+  }
 }
 
 function renderRecords() {
@@ -291,21 +362,125 @@ function recordItem(record) {
   `;
 }
 
-function openSubscriptionDialog(sub = null) {
-  $("subscriptionId").value = sub?.id || "";
-  $("subscriptionEnabled").checked = sub?.enabled ?? true;
-  $("subscriptionName").value = sub?.name || "";
-  $("subscriptionToken").value = sub?.public_token || "";
+async function openSubscriptionDialog(sub = null) {
+  let detail = sub;
+  if (sub?.id) {
+    try {
+      const result = await api(`/api/v1/admin/subscriptions/${encodeURIComponent(sub.id)}`);
+      detail = result?.item || result?.subscription || result || sub;
+      if (Array.isArray(result?.sources) && !Array.isArray(detail?.sources)) detail = { ...detail, sources: result.sources };
+      detail = { ...sub, ...detail };
+    } catch {
+      // Older servers only expose the list endpoint; its item remains editable.
+    }
+  }
+  state.editingSubscription = detail;
+  state.editingSources = normalizeSources(detail);
+  $("subscriptionId").value = detail?.id || "";
+  $("subscriptionEnabled").checked = detail?.enabled ?? true;
+  $("subscriptionName").value = detail?.name || "";
+  $("subscriptionToken").value = detail?.public_token || "";
   $("subscriptionKey").value = "";
-  $("subscriptionMode").value = sub?.mode || "rewrite";
-  $("subscriptionNodeids").value = (sub?.nodeids || []).join(",");
-  $("subscriptionShares").value = (sub?.shares || []).join("\n");
+  $("subscriptionMode").value = normalizedMode(detail || {});
+  $("subscriptionNodeids").value = (detail?.nodeids || []).join(",");
   $("dialogSecret").textContent = "";
-  $("dialogTitle").textContent = sub ? "编辑订阅" : "新增订阅";
-  $("deleteSubscriptionButton").hidden = !sub;
-  $("rotateKeyButton").hidden = !sub;
+  $("dialogTitle").textContent = detail ? "编辑订阅" : "新增订阅";
+  const fromConfig = isConfigSubscription(detail);
+  $("deleteSubscriptionButton").hidden = !detail || fromConfig;
+  $("restoreSubscriptionButton").hidden = !detail || !fromConfig || !detail?.overridden;
+  $("rotateKeyButton").hidden = !detail;
+  $("refreshSourcesButton").hidden = !detail || !state.editingSources.some((source) => source.type === "remote");
+  $("configOverrideHint").hidden = !fromConfig;
+  $("configOverrideHint").textContent = fromConfig
+    ? `${overrideLabel(detail)}。保存会建立运行时覆盖；“恢复 YAML”会移除覆盖并重新使用配置文件内容。`
+    : "";
+  renderSourceEditor();
   updateSubscriptionModeUI();
   $("subscriptionDialog").showModal();
+  $("subscriptionName").focus();
+}
+
+function renderSourceEditor() {
+  const editor = $("sourceEditor");
+  editor.innerHTML = state.editingSources.map((source, index) => {
+    const isRemote = source.type === "remote";
+    const fieldValue = isRemote ? source.url : source.share;
+    const status = sourceStatus(source);
+    return `
+      <article class="source-card ${source.enabled ? "" : "source-disabled"}">
+        <div class="source-card-head">
+          <span class="source-index">${index + 1}</span>
+          <span class="mode-chip">${isRemote ? "远程订阅" : "直连分享"}</span>
+          <label class="check-row source-toggle">
+            <input type="checkbox" data-source-index="${index}" data-source-field="enabled" ${source.enabled ? "checked" : ""} />
+            <span>启用</span>
+          </label>
+          <div class="source-actions">
+            <button class="icon compact-icon" type="button" data-source-action="up" data-source-index="${index}" aria-label="上移来源 ${index + 1}" ${index === 0 ? "disabled" : ""}>↑</button>
+            <button class="icon compact-icon" type="button" data-source-action="down" data-source-index="${index}" aria-label="下移来源 ${index + 1}" ${index === state.editingSources.length - 1 ? "disabled" : ""}>↓</button>
+            <button class="icon compact-icon danger" type="button" data-source-action="delete" data-source-index="${index}" aria-label="删除来源 ${index + 1}">×</button>
+          </div>
+        </div>
+        <label>
+          <span>来源名称</span>
+          <input type="text" data-source-index="${index}" data-source-field="name" value="${escapeAttr(source.name || "")}" placeholder="${isRemote ? "例如：机场订阅" : "例如：主节点"}" />
+        </label>
+        <label>
+          <span>${isRemote ? "订阅 URL" : "分享字符串"}</span>
+          ${isRemote
+            ? `<input type="url" data-source-index="${index}" data-source-field="url" value="${escapeAttr(fieldValue || "")}" placeholder="https://example.com/subscription" />`
+            : `<textarea rows="3" data-source-index="${index}" data-source-field="share" spellcheck="false" placeholder="vmess://、vless://、trojan:// …">${escapeHTML(fieldValue || "")}</textarea>`}
+        </label>
+        <div class="source-meta">
+          <span class="health-badge health-${escapeAttr(status.value)}"><span aria-hidden="true"></span>${escapeHTML(status.label)}</span>
+          <span>解析 ${formatCount(source.resolved_count)}</span>
+          <span>成功 ${escapeHTML(formatDate(source.last_success_at))}</span>
+          ${source.error ? `<span class="source-error" title="${escapeAttr(source.error)}">${escapeHTML(source.error)}</span>` : ""}
+        </div>
+      </article>`;
+  }).join("") || `<div class="source-empty"><strong>尚未添加来源</strong><span>添加直连分享或远程订阅后才能生成内容。</span></div>`;
+}
+
+function addSource(type) {
+  state.editingSources.push({
+    id: newSourceID(),
+    name: "",
+    type,
+    enabled: true,
+    share: "",
+    url: "",
+    status: "pending",
+    last_success_at: null,
+    resolved_count: 0,
+    error: "",
+  });
+  renderSourceEditor();
+  $("refreshSourcesButton").hidden = !$("subscriptionId").value || !state.editingSources.some((source) => source.type === "remote");
+  const inputs = $("sourceEditor").querySelectorAll("input[data-source-field='name']");
+  inputs[inputs.length - 1]?.focus();
+}
+
+function updateSourceFromInput(event) {
+  const index = Number(event.target.dataset.sourceIndex);
+  const field = event.target.dataset.sourceField;
+  if (!Number.isInteger(index) || !field || !state.editingSources[index]) return;
+  state.editingSources[index][field] = field === "enabled" ? event.target.checked : event.target.value;
+  if (field === "enabled" && event.type === "change") renderSourceEditor();
+}
+
+function handleSourceAction(event) {
+  const button = event.target.closest("button[data-source-action]");
+  if (!button) return;
+  const index = Number(button.dataset.sourceIndex);
+  if (!state.editingSources[index]) return;
+  if (button.dataset.sourceAction === "delete") state.editingSources.splice(index, 1);
+  if (button.dataset.sourceAction === "up" && index > 0) {
+    [state.editingSources[index - 1], state.editingSources[index]] = [state.editingSources[index], state.editingSources[index - 1]];
+  }
+  if (button.dataset.sourceAction === "down" && index < state.editingSources.length - 1) {
+    [state.editingSources[index + 1], state.editingSources[index]] = [state.editingSources[index], state.editingSources[index + 1]];
+  }
+  renderSourceEditor();
 }
 
 async function saveSubscription() {
@@ -323,8 +498,9 @@ async function saveSubscription() {
           body: JSON.stringify(payload),
         });
     if (result.key) {
-      $("subscriptionId").value = result.item.id;
-      $("subscriptionToken").value = result.item.public_token || "";
+      const savedItem = result.item || result.subscription || {};
+      $("subscriptionId").value = savedItem.id || id;
+      $("subscriptionToken").value = savedItem.public_token || $("subscriptionToken").value;
       $("deleteSubscriptionButton").hidden = false;
       $("rotateKeyButton").hidden = false;
       $("dialogSecret").textContent = `新 Key：${result.key}`;
@@ -378,6 +554,101 @@ async function rotateKey() {
   }
 }
 
+async function restoreSubscription() {
+  const id = $("subscriptionId").value;
+  if (!id || !confirm("移除运行时覆盖并恢复为 YAML 中的配置？")) return;
+  setBusy(true);
+  try {
+    await api(`/api/v1/admin/subscriptions/${encodeURIComponent(id)}/restore`, { method: "POST" });
+    $("subscriptionDialog").close();
+    await refreshAll();
+    notify("已恢复 YAML 配置");
+  } catch (error) {
+    $("dialogSecret").textContent = error.message;
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function refreshSubscriptionSources(id) {
+  if (!id) {
+    $("dialogSecret").textContent = "请先保存订阅，再刷新远程源";
+    return;
+  }
+  setBusy(true);
+  try {
+    const inEditor = $("subscriptionDialog").open && $("subscriptionId").value === id;
+    const result = await api(`/api/v1/admin/subscriptions/${encodeURIComponent(id)}/refresh-sources`, {
+      method: "POST",
+      ...(inEditor ? { body: JSON.stringify(subscriptionPayload()) } : {}),
+    });
+    const updated = result?.item || result?.subscription;
+    if (inEditor && updated) {
+      state.editingSubscription = { ...state.editingSubscription, ...updated };
+      state.editingSources = normalizeSources(state.editingSubscription);
+      renderSourceEditor();
+    }
+    await refreshAll();
+    notify("远程源已刷新");
+  } catch (error) {
+    if ($("subscriptionDialog").open) $("dialogSecret").textContent = error.message;
+    else notify(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function previewSubscription(id, fromEditor = false) {
+  if (!id) {
+    $("dialogSecret").textContent = "请先保存订阅，再生成预览";
+    return;
+  }
+  setBusy(true);
+  try {
+    const result = await api(`/api/v1/admin/subscriptions/${encodeURIComponent(id)}/preview`, {
+      method: "POST",
+      ...(fromEditor ? { body: JSON.stringify(subscriptionPayload()) } : {}),
+    });
+    const content = result?.content ?? result?.preview ?? result?.output ?? result?.body ?? result?.data ?? result;
+    $("previewSummary").textContent = previewSummary(result);
+    $("previewContent").textContent = typeof content === "string" ? content : JSON.stringify(content, null, 2);
+    $("previewDialog").showModal();
+    $("previewContent").focus();
+  } catch (error) {
+    if (fromEditor) $("dialogSecret").textContent = error.message;
+    else notify(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function revealSubscriptionURL(sub) {
+  const id = String(sub?.id || "");
+  if (!id) return;
+  if (state.revealedURLs.has(id)) {
+    state.revealedURLs.delete(id);
+    renderSubscriptions();
+    return;
+  }
+  let url = "";
+  try {
+    const result = await api(`/api/v1/admin/subscriptions/${encodeURIComponent(id)}/reveal-url`, { method: "POST" });
+    url = result?.url || result?.full_url || result?.url_template || "";
+  } catch (error) {
+    // Legacy list responses expose only a redacted/template URL; it is still useful as a fallback.
+    url = sub?.url || sub?.full_url || sub?.url_template || "";
+    if (!url) throw error;
+  }
+  state.revealedURLs.set(id, url);
+  renderSubscriptions();
+}
+
+async function copyText(value) {
+  if (!value) return;
+  await navigator.clipboard.writeText(value);
+  notify("已复制订阅地址");
+}
+
 async function runTemporarySpeedTest() {
   const url = $("speedTestUrl").value.trim();
   if (!url) {
@@ -429,6 +700,18 @@ async function applyTemporarySpeedTest(skipConfirm = false) {
 }
 
 function subscriptionPayload() {
+  const sources = state.editingSources.map((source) => ({
+    id: source.id,
+    name: String(source.name || "").trim(),
+    type: source.type === "remote" ? "remote" : "share",
+    enabled: source.enabled !== false,
+    share: source.type === "share" ? String(source.share || "").trim() : "",
+    url: source.type === "remote" ? String(source.url || "").trim() : "",
+    status: source.status || "",
+    last_success_at: source.last_success_at || null,
+    resolved_count: Number(source.resolved_count) || 0,
+    error: source.error || "",
+  }));
   return {
     name: $("subscriptionName").value.trim(),
     enabled: $("subscriptionEnabled").checked,
@@ -437,17 +720,126 @@ function subscriptionPayload() {
     format: "base64",
     mode: $("subscriptionMode").value || "rewrite",
     nodeids: splitLines($("subscriptionNodeids").value.replaceAll(",", "\n")),
-    shares: splitLines($("subscriptionShares").value),
+    sources,
+    // Keep legacy servers usable while sources are being rolled out.
+    shares: sources.filter((source) => source.type === "share" && source.enabled && source.share).map((source) => source.share),
   };
+}
+
+function normalizeSources(sub) {
+  if (Array.isArray(sub?.sources) && (sub.sources.length > 0 || !sub?.shares?.length)) {
+    return sub.sources.map((source, index) => ({
+      id: source.id || `source-${index + 1}`,
+      name: source.name || "",
+      type: source.type === "remote" ? "remote" : "share",
+      enabled: source.enabled !== false,
+      share: source.share || "",
+      url: source.url || "",
+      status: source.status || "",
+      last_success_at: source.last_success_at || source.success_at || null,
+      resolved_count: source.resolved_count ?? source.count,
+      error: source.error || source.last_error || "",
+    }));
+  }
+  return (sub?.shares || []).map((share, index) => ({
+    id: `legacy-share-${index + 1}`,
+    name: `直连分享 ${index + 1}`,
+    type: "share",
+    enabled: true,
+    share,
+    url: "",
+    status: "",
+    last_success_at: null,
+    resolved_count: undefined,
+    error: "",
+  }));
+}
+
+function normalizedMode(sub) {
+  return sub?.mode === "merge" ? "merge" : "rewrite";
+}
+
+function subscriptionHealth(sub) {
+  if (!sub?.enabled) return { value: "disabled", label: "已停用" };
+  const raw = String(sub.health || sub.health_status || sub.status || "").toLowerCase();
+  if (["healthy", "ok", "success", "ready"].includes(raw)) return { value: "healthy", label: "健康" };
+  if (["degraded", "partial", "stale", "warning"].includes(raw)) return { value: "degraded", label: "部分异常" };
+  if (["unhealthy", "error", "failed", "failure"].includes(raw)) return { value: "unhealthy", label: "异常" };
+  const enabledSources = normalizeSources(sub).filter((source) => source.enabled);
+  const failed = enabledSources.filter((source) => source.error || ["error", "failed", "unhealthy"].includes(String(source.status).toLowerCase()));
+  if (failed.length && failed.length === enabledSources.length) return { value: "unhealthy", label: "异常" };
+  if (failed.length) return { value: "degraded", label: "部分异常" };
+  return { value: "healthy", label: "正常" };
+}
+
+function sourceStatus(source) {
+  if (!source.enabled) return { value: "disabled", label: "已停用" };
+  if (source.error) return { value: "unhealthy", label: "异常" };
+  const raw = String(source.status || "").toLowerCase();
+  if (["healthy", "ok", "success", "ready"].includes(raw)) return { value: "healthy", label: "健康" };
+  if (["error", "failed", "unhealthy", "failure"].includes(raw)) return { value: "unhealthy", label: "异常" };
+  if (["degraded", "partial", "stale", "warning"].includes(raw)) return { value: "degraded", label: "部分异常" };
+  if (source.last_success_at) return { value: "healthy", label: "已成功" };
+  return { value: "degraded", label: source.type === "remote" ? "待刷新" : "未检查" };
+}
+
+function isConfigSubscription(sub) {
+  return Boolean(sub && (sub.source === "config" || sub.source === "yaml" || sub.static === true || String(sub.id || "").startsWith("config:")));
+}
+
+function overrideLabel(sub) {
+  const raw = sub?.override_status ?? sub?.config_override ?? sub?.override ?? sub?.overridden;
+  if (raw === true || ["override", "overridden", "custom"].includes(String(raw).toLowerCase())) return "运行时覆盖";
+  if (raw === false || ["yaml", "original", "inherited"].includes(String(raw).toLowerCase())) return "YAML 原始配置";
+  if (isConfigSubscription(sub)) return sub?.editable ? "运行时覆盖" : "YAML 原始配置";
+  return "运行时配置";
+}
+
+function firstNumber(...values) {
+  const value = values.find((item) => item !== null && item !== undefined && Number.isFinite(Number(item)));
+  return value === undefined ? null : Number(value);
+}
+
+function sumField(items, field) {
+  const values = items.map((item) => item[field]).filter((value) => value !== null && value !== undefined && Number.isFinite(Number(value)));
+  return values.length ? values.reduce((sum, value) => sum + Number(value), 0) : null;
+}
+
+function latestDate(values) {
+  const dates = values.filter(Boolean).map((value) => new Date(value)).filter((date) => !Number.isNaN(date.valueOf()));
+  return dates.length ? new Date(Math.max(...dates.map((date) => date.valueOf()))).toISOString() : null;
+}
+
+function formatCount(value) {
+  return value === null || value === undefined ? "-" : Number(value).toLocaleString();
+}
+
+function previewSummary(result) {
+  if (!result || typeof result !== "object") return "预览已生成";
+  const resolved = firstNumber(result.resolved_count, result.parsed_count, result.parse_count);
+  const output = firstNumber(result.output_count, result.generated_count, result.count);
+  const parts = [];
+  if (resolved !== null) parts.push(`解析 ${formatCount(resolved)}`);
+  if (output !== null) parts.push(`输出 ${formatCount(output)}`);
+  if (Array.isArray(result.warnings) && result.warnings.length) parts.push(`${result.warnings.length} 条警告`);
+  return parts.join(" · ") || "预览已生成";
+}
+
+function newSourceID() {
+  if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
+  return `source-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function updateSubscriptionModeUI() {
   const mode = $("subscriptionMode").value || "rewrite";
   $("subscriptionNodeidsLabel").hidden = mode === "merge";
+  $("subscriptionModeHint").textContent = mode === "merge"
+    ? "所有来源按原顺序合并，不依赖优选记录，也不解析协议。"
+    : "已支持协议会改写到优选地址；未知或解析失败的协议会原样保留，并在预览中告警。";
 }
 
 function modeLabel(mode) {
-  return mode === "merge" ? "只合并" : "优选改写";
+  return mode === "merge" ? "原地址直返" : "优选改写";
 }
 
 function subscriptionLineLabel(sub) {
@@ -474,8 +866,20 @@ function splitLines(value) {
 }
 
 function setBusy(busy) {
-  document.querySelectorAll("button").forEach((button) => {
-    button.disabled = busy && !button.dataset.edit && !button.dataset.copy;
+  document.documentElement.setAttribute("aria-busy", String(busy));
+  if (busy) {
+    document.querySelectorAll("button").forEach((button) => {
+      if (button.dataset.busyManaged) return;
+      button.dataset.busyManaged = "true";
+      button.dataset.busyWasDisabled = String(button.disabled);
+      button.disabled = true;
+    });
+    return;
+  }
+  document.querySelectorAll("button[data-busy-managed]").forEach((button) => {
+    button.disabled = button.dataset.busyWasDisabled === "true";
+    delete button.dataset.busyManaged;
+    delete button.dataset.busyWasDisabled;
   });
 }
 

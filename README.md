@@ -11,7 +11,8 @@
 - 只管理 `managed_prefix` 和 `managed_base_subdomain` 生成的记录，例如 `cf-cctcc-01.cdn.q.example.com`，不会修改其他 DNS 记录。
 - 默认域名可自动使用当前最快的电信节点，例如更新 `cdn.q.example.com` 到最快 `ctcc` IP。
 - 支持通配符 CNAME 回落：删除 `cf-cctcc-01.cdn.q.example.com` 后，可由 `*.cdn.q.example.com` 回落到 `cdn.q.example.com`。
-- 可公开多个长路径订阅地址，可将输入的 3x-ui/v2ray 分享字符串批量替换为当前优选域名，也可只合并原始分享链接。
+- 可公开多个长路径订阅地址，每个订阅可组合直接分享和远程订阅源，再按订阅级 `rewrite` 或 `merge` 模式生成。
+- 远程订阅源默认每 15 分钟刷新并持久化最后一次成功内容，也可在管理工具中手动刷新。
 - 可选独立 Cloudflare Pages/Workers 管理工具，用于查看优选 IP、查看测速结果、运行时管理订阅。
 - 每个 IP 都会 ping，ping 不通或平均延迟超过默认 `800ms` 会被丢弃。
 - 可选真实 HTTPS 测速：ping 预筛后连接候选 IP、使用你的 Cloudflare 业务域名下载固定字节数，并按实测速率更新受控 DNS 记录排序。
@@ -47,6 +48,9 @@ docker compose up -d --build
 - `DNSPOD_SECRET_KEY`
 - `DNSPOD_DOMAIN`
 - `API_BEARER_TOKEN`
+- `SUBSCRIPTIONS_STATE_FILE` 或 `STATE_SUBSCRIPTIONS_FILE`：运行时订阅及 YAML 覆盖层 JSON 路径。
+- `SUBSCRIPTION_CACHE_FILE`：远程订阅源的 last-good 缓存 JSON 路径。
+- `SUBSCRIPTION_SOURCE_REFRESH_INTERVAL`、`SUBSCRIPTION_SOURCE_TIMEOUT`、`SUBSCRIPTION_SOURCE_MAX_RESPONSE_BYTES`、`SUBSCRIPTION_SOURCE_MAX_LINES`、`SUBSCRIPTION_SOURCE_MAX_REDIRECTS`：远程订阅源刷新及资源限制。
 
 常用同步参数：
 
@@ -66,19 +70,27 @@ docker compose up -d --build
 订阅参数：
 
 - `subscriptions`：公开订阅列表，每一项独立生成一个订阅地址。
+- `subscriptions[].id`：可选稳定标识，便于远程源缓存和管理。
 - `subscriptions[].enabled`：是否启用该订阅。
 - `subscriptions[].name`：订阅名称，仅用于配置识别和诊断。
 - `subscriptions[].public_token`：公开订阅路径 token，访问地址为 `/sub/<public_token>?key=<key>`，无需 Bearer Token，至少 16 个字符。
 - `subscriptions[].key`：订阅 query 参数鉴权 key，启用订阅时必填，建议使用足够长的随机值。
 - `subscriptions[].mode`：订阅生成方式，`rewrite` 为默认值，会使用优选 FQDN 改写分享链接；`merge` 只合并分享链接，不使用优选 IP。
 - `subscriptions[].nodeids`：可选线路过滤，例如 `["ctcc"]`；仅 `mode: rewrite` 生效。为空时使用全部非 fallback 优选域名。请求可用 `nodeids=ctcc,bgp` 动态收窄线路范围。
-- `subscriptions[].shares`：原始分享字符串列表，支持 `vmess`、`vless`、`trojan`、`ss`、`hysteria`、`hysteria2`。
+- `subscriptions[].sources`：订阅来源列表。每个来源建议显式设置唯一 `id` 和 `enabled`；`type: share` 使用 `share`（支持 `vmess`、`vless`、`trojan`、`ss`、`hysteria`、`hysteria2`），`type: remote` 使用 HTTP(S) `url`。
+- `subscriptions[].shares`：旧格式直接分享列表，继续兼容；新配置建议使用 `sources`。
 - `subscriptions[].format`：当前固定为 `base64`。
+
+`mode` 仍属于整个订阅，不是单个来源。远程响应会自动识别 Base64 或 UTF-8 明文，并按非空行导入，保留顺序和重复项。`merge` 对未知协议始终原样合并；`rewrite` 也会原样保留无法识别或改写的行，管理端预览会标出未知协议告警。
+
+`subscription_sources` 控制远程源全局行为：`refresh_interval` 默认 `15m`、`timeout` 默认 `10s`、`max_response_bytes` 默认 `2097152`、`max_lines` 默认 `10000`、`max_redirects` 默认 `5`。远程地址允许 HTTP/HTTPS，包括私网主机；请只配置可信 URL，上述超时、响应大小、行数和重定向上限会一并生效。服务启动时立即刷新，之后定时刷新；刷新失败时保留最后一次成功内容，公开订阅请求本身不发起远程网络请求。
 
 运行时订阅管理：
 
 - `state.subscriptions_file`：Cloudflare 管理工具新增/编辑的订阅持久化文件，默认 `/data/subscriptions.json`。
-- `config.yaml` 里的 `subscriptions` 仍然兼容且只读；管理 API 只修改 `state.subscriptions_file`。
+- `state.subscription_cache_file`：远程订阅源 last-good 缓存，默认 `/data/subscription-cache.json`。
+- `config.yaml` 里的 `subscriptions` 是静态基线。Web 管理端编辑时不改 YAML，而是把覆盖层写入 `/data/subscriptions.json`；可用“恢复 YAML”删除覆盖并重新使用静态配置。
+- 计划通过 Web 编辑的 YAML 订阅应设置唯一且长期不变的 `subscriptions[].id`。如果 YAML 基线变化导致已有覆盖不再匹配，服务会继续使用 YAML 配置，并在管理页显示“覆盖未应用”告警，而不会因旧覆盖退出。
 
 网页模式配置：
 
@@ -138,6 +150,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/upda
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/config
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/admin/subscriptions
 curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" http://localhost:8080/api/v1/admin/subscriptions
+curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/admin/subscriptions/<id>/refresh-sources
 curl -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: text/csv" --data-binary @result.csv http://localhost:8080/api/v1/admin/custom-ips/csv
 ```
 
@@ -150,9 +163,9 @@ curl "http://localhost:8080/sub/replace-with-a-long-random-subscription-token?ke
 curl "http://localhost:8080/sub/replace-with-a-long-random-subscription-token?key=replace-with-a-long-random-subscription-key&nodeids=ctcc"
 ```
 
-`mode: rewrite` 的订阅内容会把分享链接的实际连接地址替换为当前优选 FQDN，例如 `cf-ctcc-01.cdn.q.example.com`；`sni`、`host`、`path` 等传输参数保持原值。生成的节点显示名会保留原名称，并追加线路、节点主机、ping 和可用测速概要，例如 `HongKong [ctcc cf-ctcc-01 ping 40ms 12.3MB/s]`。配置了 `nodeids` 时，只会使用匹配线路的优选 FQDN；请求里的 `nodeids` 只能在配置允许范围内继续收窄。
+`mode: rewrite` 的订阅内容会把已支持分享链接的实际连接地址替换为当前优选 FQDN，例如 `cf-ctcc-01.cdn.q.example.com`；`sni`、`host`、`path` 等传输参数保持原值。生成的节点显示名会保留原名称，并追加线路、节点主机、ping 和可用测速概要，例如 `HongKong [ctcc cf-ctcc-01 ping 40ms 12.3MB/s]`。配置了 `nodeids` 时，只会使用匹配线路的优选 FQDN；请求里的 `nodeids` 只能在配置允许范围内继续收窄。
 
-`mode: merge` 的订阅内容只会把 `shares` 中的非空分享字符串按原顺序合并为 base64 订阅，保留重复项，不解析协议，不改写连接地址，也不依赖当前优选记录；请求里的 `nodeids` 参数会被忽略。
+`mode: merge` 的订阅内容只会把已启用来源解析出的非空行按原顺序合并为 base64 订阅，保留重复项，不解析协议，不改写连接地址，也不依赖当前优选记录；请求里的 `nodeids` 参数会被忽略。
 
 ## Cloudflare 管理工具
 
@@ -161,6 +174,8 @@ curl "http://localhost:8080/sub/replace-with-a-long-random-subscription-token?ke
 - Pages 前端提供总览、订阅管理、优选 IP 列表和测速结果列表。
 - Functions 使用独立管理密码登录，签发 HttpOnly session cookie。
 - `/api/*` 由 Function 代理到 Go 后端，并在服务端注入 `BACKEND_BEARER_TOKEN`，浏览器不会拿到 Go API token。
+- `/sub/*` 会透传路径和 query 到 Go 后端，因此订阅客户端可直接使用 Pages 域名，仍由订阅 `key` 鉴权。
+- 列表默认只显示脱敏 URL 模板；完整订阅链接仅在管理端按需显示和复制。
 - Go 后端仍负责订阅生成、优选 IP、测速和 DNS 同步。
 
 生产环境建议通过 Cloudflare Tunnel 暴露 Go 后端，再配置 Pages 环境变量：

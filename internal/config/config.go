@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -34,13 +35,14 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 }
 
 type Config struct {
-	Provider               ProviderConfig       `yaml:"provider" json:"provider"`
-	DNSPod                 DNSPodConfig         `yaml:"dnspod" json:"dnspod"`
-	Sync                   SyncConfig           `yaml:"sync" json:"sync"`
-	API                    APIConfig            `yaml:"api" json:"api"`
-	State                  StateConfig          `yaml:"state" json:"state"`
-	Subscriptions          []SubscriptionConfig `yaml:"subscriptions" json:"subscriptions,omitempty"`
-	DeprecatedSubscription *SubscriptionConfig  `yaml:"subscription" json:"-"`
+	Provider               ProviderConfig             `yaml:"provider" json:"provider"`
+	DNSPod                 DNSPodConfig               `yaml:"dnspod" json:"dnspod"`
+	Sync                   SyncConfig                 `yaml:"sync" json:"sync"`
+	API                    APIConfig                  `yaml:"api" json:"api"`
+	State                  StateConfig                `yaml:"state" json:"state"`
+	Subscriptions          []SubscriptionConfig       `yaml:"subscriptions" json:"subscriptions,omitempty"`
+	SubscriptionSources    SubscriptionSourceSettings `yaml:"subscription_sources" json:"subscription_sources"`
+	DeprecatedSubscription *SubscriptionConfig        `yaml:"subscription" json:"-"`
 }
 
 type ProviderConfig struct {
@@ -106,19 +108,39 @@ type APIConfig struct {
 }
 
 type StateConfig struct {
-	File              string `yaml:"state_file" json:"state_file"`
-	SubscriptionsFile string `yaml:"subscriptions_file" json:"subscriptions_file"`
+	File                  string `yaml:"state_file" json:"state_file"`
+	SubscriptionsFile     string `yaml:"subscriptions_file" json:"subscriptions_file"`
+	SubscriptionCacheFile string `yaml:"subscription_cache_file" json:"subscription_cache_file"`
+}
+
+type SubscriptionSourceSettings struct {
+	RefreshInterval  Duration `yaml:"refresh_interval" json:"refresh_interval"`
+	Timeout          Duration `yaml:"timeout" json:"timeout"`
+	MaxResponseBytes int64    `yaml:"max_response_bytes" json:"max_response_bytes"`
+	MaxLines         int      `yaml:"max_lines" json:"max_lines"`
+	MaxRedirects     int      `yaml:"max_redirects" json:"max_redirects"`
 }
 
 type SubscriptionConfig struct {
-	Name        string   `yaml:"name" json:"name,omitempty"`
-	Enabled     bool     `yaml:"enabled" json:"enabled"`
-	PublicToken string   `yaml:"public_token" json:"public_token,omitempty"`
-	Key         string   `yaml:"key" json:"-"`
-	Shares      []string `yaml:"shares" json:"shares,omitempty"`
-	Format      string   `yaml:"format" json:"format"`
-	NodeIDs     []string `yaml:"nodeids" json:"nodeids,omitempty"`
-	Mode        string   `yaml:"mode" json:"mode,omitempty"`
+	ID          string                     `yaml:"id,omitempty" json:"id,omitempty"`
+	Name        string                     `yaml:"name" json:"name,omitempty"`
+	Enabled     bool                       `yaml:"enabled" json:"enabled"`
+	PublicToken string                     `yaml:"public_token" json:"public_token,omitempty"`
+	Key         string                     `yaml:"key" json:"-"`
+	Shares      []string                   `yaml:"shares" json:"shares,omitempty"`
+	Format      string                     `yaml:"format" json:"format"`
+	NodeIDs     []string                   `yaml:"nodeids" json:"nodeids,omitempty"`
+	Mode        string                     `yaml:"mode" json:"mode,omitempty"`
+	Sources     []SubscriptionSourceConfig `yaml:"sources,omitempty" json:"sources,omitempty"`
+}
+
+type SubscriptionSourceConfig struct {
+	ID      string `yaml:"id,omitempty" json:"id,omitempty"`
+	Name    string `yaml:"name,omitempty" json:"name,omitempty"`
+	Type    string `yaml:"type" json:"type"`
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	Share   string `yaml:"share,omitempty" json:"share,omitempty"`
+	URL     string `yaml:"url,omitempty" json:"url,omitempty"`
 }
 
 func Load(path string) (Config, error) {
@@ -158,6 +180,7 @@ func normalize(cfg *Config) {
 	}
 	for i := range cfg.Subscriptions {
 		sub := &cfg.Subscriptions[i]
+		sub.ID = strings.TrimSpace(sub.ID)
 		sub.Name = strings.TrimSpace(sub.Name)
 		sub.PublicToken = strings.TrimSpace(sub.PublicToken)
 		sub.Key = strings.TrimSpace(sub.Key)
@@ -173,6 +196,14 @@ func normalize(cfg *Config) {
 			}
 		}
 		sub.Shares = shares
+		for sourceIndex := range sub.Sources {
+			source := &sub.Sources[sourceIndex]
+			source.ID = strings.TrimSpace(source.ID)
+			source.Name = strings.TrimSpace(source.Name)
+			source.Type = strings.ToLower(strings.TrimSpace(source.Type))
+			source.Share = strings.TrimSpace(source.Share)
+			source.URL = strings.TrimSpace(source.URL)
+		}
 
 		nodeIDs := make([]string, 0, len(sub.NodeIDs))
 		for _, nodeID := range sub.NodeIDs {
@@ -183,6 +214,21 @@ func normalize(cfg *Config) {
 		sub.NodeIDs = nodeIDs
 	}
 	cfg.Sync.SpeedTest.URL = strings.TrimSpace(cfg.Sync.SpeedTest.URL)
+	if cfg.SubscriptionSources.RefreshInterval.Duration <= 0 {
+		cfg.SubscriptionSources.RefreshInterval.Duration = 15 * time.Minute
+	}
+	if cfg.SubscriptionSources.Timeout.Duration <= 0 {
+		cfg.SubscriptionSources.Timeout.Duration = 10 * time.Second
+	}
+	if cfg.SubscriptionSources.MaxResponseBytes <= 0 {
+		cfg.SubscriptionSources.MaxResponseBytes = 2 * 1024 * 1024
+	}
+	if cfg.SubscriptionSources.MaxLines <= 0 {
+		cfg.SubscriptionSources.MaxLines = 10000
+	}
+	if cfg.SubscriptionSources.MaxRedirects <= 0 {
+		cfg.SubscriptionSources.MaxRedirects = 5
+	}
 	if cfg.Sync.SpeedTest.DownloadBytes <= 0 {
 		cfg.Sync.SpeedTest.DownloadBytes = 1024 * 1024
 	}
@@ -238,8 +284,16 @@ func defaults() Config {
 			ListenAddr: ":8080",
 		},
 		State: StateConfig{
-			File:              "/data/state.json",
-			SubscriptionsFile: "/data/subscriptions.json",
+			File:                  "/data/state.json",
+			SubscriptionsFile:     "/data/subscriptions.json",
+			SubscriptionCacheFile: "/data/subscription-cache.json",
+		},
+		SubscriptionSources: SubscriptionSourceSettings{
+			RefreshInterval:  Duration{Duration: 15 * time.Minute},
+			Timeout:          Duration{Duration: 10 * time.Second},
+			MaxResponseBytes: 2 * 1024 * 1024,
+			MaxLines:         10000,
+			MaxRedirects:     5,
 		},
 	}
 }
@@ -288,6 +342,12 @@ func applyEnv(cfg *Config) {
 	setString(&cfg.State.File, "STATE_FILE")
 	setString(&cfg.State.SubscriptionsFile, "SUBSCRIPTIONS_STATE_FILE")
 	setString(&cfg.State.SubscriptionsFile, "STATE_SUBSCRIPTIONS_FILE")
+	setString(&cfg.State.SubscriptionCacheFile, "SUBSCRIPTION_CACHE_FILE")
+	setDuration(&cfg.SubscriptionSources.RefreshInterval, "SUBSCRIPTION_SOURCE_REFRESH_INTERVAL")
+	setDuration(&cfg.SubscriptionSources.Timeout, "SUBSCRIPTION_SOURCE_TIMEOUT")
+	setInt64(&cfg.SubscriptionSources.MaxResponseBytes, "SUBSCRIPTION_SOURCE_MAX_RESPONSE_BYTES")
+	setInt(&cfg.SubscriptionSources.MaxLines, "SUBSCRIPTION_SOURCE_MAX_LINES")
+	setInt(&cfg.SubscriptionSources.MaxRedirects, "SUBSCRIPTION_SOURCE_MAX_REDIRECTS")
 }
 
 func (c Config) Validate() error {
@@ -378,7 +438,14 @@ func (c Config) Validate() error {
 		return errors.New("subscription is no longer supported; use subscriptions list instead")
 	}
 	seenTokens := map[string]struct{}{}
+	seenSubscriptionIDs := map[string]struct{}{}
 	for i, sub := range c.Subscriptions {
+		if sub.ID != "" {
+			if _, exists := seenSubscriptionIDs[sub.ID]; exists {
+				return fmt.Errorf("subscriptions[%d].id must be unique", i)
+			}
+			seenSubscriptionIDs[sub.ID] = struct{}{}
+		}
 		format := strings.ToLower(strings.TrimSpace(sub.Format))
 		if format == "" {
 			format = "base64"
@@ -409,8 +476,33 @@ func (c Config) Validate() error {
 			return fmt.Errorf("subscriptions[%d].public_token must be unique among enabled subscriptions", i)
 		}
 		seenTokens[sub.PublicToken] = struct{}{}
-		if len(sub.Shares) == 0 {
-			return fmt.Errorf("subscriptions[%d].shares must not be empty when subscription is enabled", i)
+		if len(sub.Shares) == 0 && len(sub.Sources) == 0 {
+			return fmt.Errorf("subscriptions[%d].shares or sources must not be empty when subscription is enabled", i)
+		}
+		seenSourceIDs := map[string]struct{}{}
+		for sourceIndex, source := range sub.Sources {
+			if source.ID != "" {
+				if _, exists := seenSourceIDs[source.ID]; exists {
+					return fmt.Errorf("subscriptions[%d].sources[%d].id must be unique", i, sourceIndex)
+				}
+				seenSourceIDs[source.ID] = struct{}{}
+			}
+			switch source.Type {
+			case "share":
+				if source.Share == "" {
+					return fmt.Errorf("subscriptions[%d].sources[%d].share must not be empty", i, sourceIndex)
+				}
+				if strings.ContainsAny(source.Share, "\r\n") {
+					return fmt.Errorf("subscriptions[%d].sources[%d].share must contain exactly one share", i, sourceIndex)
+				}
+			case "remote":
+				parsed, err := url.Parse(source.URL)
+				if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+					return fmt.Errorf("subscriptions[%d].sources[%d].url must use http or https", i, sourceIndex)
+				}
+			default:
+				return fmt.Errorf("subscriptions[%d].sources[%d].type must be share or remote", i, sourceIndex)
+			}
 		}
 	}
 	return nil
@@ -433,6 +525,11 @@ func (c Config) Redacted() Config {
 		c.Subscriptions[i].PublicToken = ""
 		c.Subscriptions[i].Key = ""
 		c.Subscriptions[i].Shares = nil
+		c.Subscriptions[i].Sources = append([]SubscriptionSourceConfig(nil), c.Subscriptions[i].Sources...)
+		for sourceIndex := range c.Subscriptions[i].Sources {
+			c.Subscriptions[i].Sources[sourceIndex].Share = ""
+			c.Subscriptions[i].Sources[sourceIndex].URL = ""
+		}
 	}
 	return c
 }

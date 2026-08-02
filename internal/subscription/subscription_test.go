@@ -159,6 +159,55 @@ func TestGenerateUsesPreferredFQDNsAndBase64Subscription(t *testing.T) {
 	}
 }
 
+func TestGenerateRewritePreservesUnsupportedAndMalformedSharesOnceInInputOrder(t *testing.T) {
+	records := []state.Record{
+		{Name: "cf-ctcc-01.cdn", FQDN: "cf-ctcc-01.cdn.example.com", NodeID: "ctcc", LatencyMS: 40, UpdatedAt: time.Now()},
+		{Name: "cf-bgp-01.cdn", FQDN: "cf-bgp-01.cdn.example.com", NodeID: "bgp", LatencyMS: 90, UpdatedAt: time.Now()},
+	}
+	unsupported := "tuic://uuid:password@old.example.com:443#opaque"
+	malformed := "vmess://not-base64!"
+	out, err := Generate(Config{
+		Format: "base64",
+		Shares: []string{
+			"vless://uuid@old.example.com:443?security=tls#first",
+			unsupported,
+			malformed,
+			unsupported,
+			"trojan://pass@old.example.com:8443?security=tls#last",
+		},
+	}, records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(decoded), "\n"), "\n")
+	if len(lines) != 7 {
+		t.Fatalf("line count = %d, want 7: %q", len(lines), decoded)
+	}
+
+	wantHosts := map[int]string{
+		0: "cf-ctcc-01.cdn.example.com",
+		1: "cf-bgp-01.cdn.example.com",
+		5: "cf-ctcc-01.cdn.example.com",
+		6: "cf-bgp-01.cdn.example.com",
+	}
+	for index, wantHost := range wantHosts {
+		parsed, err := url.Parse(lines[index])
+		if err != nil {
+			t.Fatalf("line %d: %v", index, err)
+		}
+		if parsed.Hostname() != wantHost {
+			t.Fatalf("line %d host = %q, want %q: %s", index, parsed.Hostname(), wantHost, lines[index])
+		}
+	}
+	if lines[2] != unsupported || lines[3] != malformed || lines[4] != unsupported {
+		t.Fatalf("opaque shares were not preserved once in input order: %q", decoded)
+	}
+}
+
 func TestGenerateMergeModeCombinesSharesWithoutTargetsOrRewrite(t *testing.T) {
 	shares := []string{
 		"",
